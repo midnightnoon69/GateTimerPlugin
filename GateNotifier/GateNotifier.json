@@ -1,13 +1,26 @@
-{
-  "Author": "Midnight Noon",
-  "Name": "GATE Notifier",
-  "Punchline": "Get notified about upcoming Gold Saucer GATEs.",
-  "Description": "Alerts you before Gold Saucer GATE events with configurable per-GATE preferences, countdown overlay, and chat/toast notifications. Use /gate to toggle overlay, /gate config for settings.",
-  "ApplicableVersion": "any",
-  "Tags": [
-    "gold saucer",
-    "gate",
-    "notification",
-    "timer"
-  ]
-}
+[
+  {
+    "Author": "Midnight Noon",
+    "Name": "GATE Notifier",
+    "Punchline": "Get notified about upcoming Gold Saucer GATEs.",
+    "Description": "Alerts you before Gold Saucer GATE events with configurable per-GATE preferences, countdown overlay, and chat/toast notifications. Use /gate to toggle overlay, /gate config for settings.",
+    "InternalName": "GateNotifier",
+    "AssemblyVersion": "0.0.0.1",
+    "RepoUrl": "https://github.com/midnightnoon69/GateTimerPlugin",
+    "ApplicableVersion": "any",
+    "DalamudApiLevel": 14,
+    "IsHide": false,
+    "IsTestingExclusive": false,
+    "DownloadCount": 0,
+    "LastUpdate": 0,
+    "DownloadLinkInstall": "https://github.com/midnightnoon69/GateTimerPlugin/releases/download/0.0.0.1/GateNotifier.zip",
+    "DownloadLinkUpdate": "https://github.com/midnightnoon69/GateTimerPlugin/releases/download/0.0.0.1/GateNotifier.zip",
+    "DownloadLinkTesting": "https://github.com/midnightnoon69/GateTimerPlugin/releases/download/0.0.0.1/GateNotifier.zip",
+    "Tags": [
+      "gold saucer",
+      "gate",
+      "notification",
+      "timer"
+    ]
+  }
+]
