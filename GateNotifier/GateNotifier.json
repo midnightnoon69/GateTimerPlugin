@@ -1,0 +1,13 @@
+{
+  "Author": "your name here",
+  "Name": "GATE Notifier",
+  "Punchline": "Get notified about upcoming Gold Saucer GATEs.",
+  "Description": "Alerts you before Gold Saucer GATE events with configurable per-GATE preferences, countdown overlay, and chat/toast notifications. Use /gate to toggle overlay, /gate config for settings.",
+  "ApplicableVersion": "any",
+  "Tags": [
+    "gold saucer",
+    "gate",
+    "notification",
+    "timer"
+  ]
+}
