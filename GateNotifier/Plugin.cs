@@ -20,6 +20,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
     [PluginService] internal static IToastGui ToastGui { get; private set; } = null!;
     [PluginService] internal static ICondition Condition { get; private set; } = null!;
+    [PluginService] internal static IDtrBar DtrBar { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
 
     private const string CommandName = "/gate";
@@ -29,6 +30,8 @@ public sealed class Plugin : IDalamudPlugin
     public readonly WindowSystem WindowSystem = new("GateNotifier");
     private ConfigWindow ConfigWindow { get; init; }
     private OverlayWindow OverlayWindow { get; init; }
+
+    private readonly IDtrBarEntry dtrEntry;
 
     private TimeSpan previousTimeRemaining = GateScheduler.GetTimeUntilNextGate(DateTime.UtcNow);
     private DateTime lastAlertTime = DateTime.MinValue;
@@ -57,6 +60,9 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
 
+        dtrEntry = DtrBar.Get("GateNotifier");
+        dtrEntry.OnClick = () => ConfigWindow.Toggle();
+
         Framework.Update += OnFrameworkUpdate;
         ChatGui.ChatMessage += OnChatMessage;
 
@@ -65,6 +71,8 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
+        dtrEntry.Remove();
+
         Framework.Update -= OnFrameworkUpdate;
         ChatGui.ChatMessage -= OnChatMessage;
 
@@ -119,6 +127,25 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         previousTimeRemaining = timeRemaining;
+
+        // Update DTR bar entry
+        if (Configuration.ShowDtrBar)
+        {
+            dtrEntry.Shown = true;
+            dtrEntry.Text = $"GATE {timeRemaining.Minutes:D2}:{timeRemaining.Seconds:D2}";
+
+            // Tooltip: show detected or possible GATEs
+            if (CurrentGateName != null)
+                dtrEntry.Tooltip = $"Current: {CurrentGateName}";
+            else if (LastDetectedGateName != null)
+                dtrEntry.Tooltip = $"Next: {LastDetectedGateName}";
+            else
+                dtrEntry.Tooltip = $"Possible: {string.Join(" / ", GetPossibleGates())}";
+        }
+        else
+        {
+            dtrEntry.Shown = false;
+        }
     }
 
     private void OnChatMessage(XivChatType type, int timestamp, ref SeString sender, ref SeString message, ref bool isHandled)
@@ -126,7 +153,9 @@ public sealed class Plugin : IDalamudPlugin
         if (!Configuration.EnableChatDetection)
             return;
 
-        if (type != XivChatType.SystemMessage)
+        // GATE announcements use SystemMessage base type (57) but the raw value
+        // may include flag bits (e.g. 2105 = 0x0839). Check the base type only.
+        if (((int)type & 0x7F) != (int)XivChatType.SystemMessage)
             return;
 
         var text = message.TextValue;
@@ -134,8 +163,23 @@ public sealed class Plugin : IDalamudPlugin
         {
             if (text.Contains(substring, StringComparison.OrdinalIgnoreCase))
             {
-                LastDetectedGateName = GateDefinitions.DisplayNames[gateType];
-                LastDetectedGateType = gateType;
+                var gateName = GateDefinitions.DisplayNames[gateType];
+                Log.Information($"GATE detected: {gateName} (chat type {(int)type})");
+
+                var timeRemaining = GateScheduler.GetTimeUntilNextGate(DateTime.UtcNow);
+
+                // If we just crossed a cycle boundary (>15 min left) and have no
+                // current GATE yet, the announcement is for the active slot.
+                if (CurrentGateName == null && timeRemaining.TotalMinutes > 15)
+                {
+                    CurrentGateName = gateName;
+                    CurrentGateType = gateType;
+                }
+                else
+                {
+                    LastDetectedGateName = gateName;
+                    LastDetectedGateType = gateType;
+                }
 
                 if (Configuration.EnabledGates.TryGetValue(gateType, out var enabled) && enabled)
                 {

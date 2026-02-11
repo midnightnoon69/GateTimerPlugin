@@ -22,6 +22,8 @@ public class Configuration : IPluginConfiguration
 
     public bool SuppressInDuty { get; set; } = true;
 
+    public bool ShowDtrBar { get; set; } = true;
+
     public void Initialize()
     {
         foreach (var gate in Enum.GetValues<GateType>())

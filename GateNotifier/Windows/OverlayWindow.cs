@@ -148,24 +148,22 @@ public class OverlayWindow : Window, IDisposable
 
         ImGui.Spacing();
 
-        var slots = plugin.GetUpcomingSlots(9);
+        var slots = plugin.GetUpcomingSlots(3);
         foreach (var (time, gates) in slots)
         {
             var localTime = time.ToLocalTime();
             var timeStr = localTime.ToString("HH:mm");
             var slotHasTracked = plugin.HasEnabledGateInSlot(gates);
 
-            var gateNames = new string[gates.Length];
-            for (var i = 0; i < gates.Length; i++)
-            {
-                gateNames[i] = gates[i];
-            }
-
             var lineColor = slotHasTracked ? PurpleAccent : DimText;
             ImGui.PushStyleColor(ImGuiCol.Text, lineColor);
-            ImGui.TextUnformatted($"  {timeStr}  {string.Join(" / ", gateNames)}");
+            ImGui.TextUnformatted($"  {timeStr}  {string.Join(" / ", gates)}");
             ImGui.PopStyleColor();
         }
+
+        ImGui.PushStyleColor(ImGuiCol.Text, DimText);
+        ImGui.TextUnformatted("  Schedule repeats every hour.");
+        ImGui.PopStyleColor();
 
         ImGui.Spacing();
 

@@ -68,6 +68,13 @@ public class ConfigWindow : Window, IDisposable
                 configuration.Save();
             }
 
+            var dtrBar = configuration.ShowDtrBar;
+            if (ImGui.Checkbox("Show countdown in Server Info Bar", ref dtrBar))
+            {
+                configuration.ShowDtrBar = dtrBar;
+                configuration.Save();
+            }
+
             var suppress = configuration.SuppressInDuty;
             if (ImGui.Checkbox("Suppress notifications in duties", ref suppress))
             {
