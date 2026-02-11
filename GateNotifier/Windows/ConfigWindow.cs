@@ -142,6 +142,25 @@ public class ConfigWindow : Window, IDisposable
                 configuration.NotifyViaToast = toast;
                 configuration.Save();
             }
+
+            var sound = configuration.NotifyViaSound;
+            if (ImGui.Checkbox("Sound effect", ref sound))
+            {
+                configuration.NotifyViaSound = sound;
+                configuration.Save();
+            }
+
+            if (configuration.NotifyViaSound)
+            {
+                ImGui.SameLine();
+                ImGui.SetNextItemWidth(80);
+                var seNum = configuration.SoundEffectNumber;
+                if (ImGui.SliderInt($"<se.{seNum}>", ref seNum, 1, 16))
+                {
+                    configuration.SoundEffectNumber = seNum;
+                    configuration.Save();
+                }
+            }
         }
 
         ImGui.Spacing();

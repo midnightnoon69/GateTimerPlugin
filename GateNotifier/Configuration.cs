@@ -14,6 +14,8 @@ public class Configuration : IPluginConfiguration
 
     public bool NotifyViaChat { get; set; } = true;
     public bool NotifyViaToast { get; set; } = true;
+    public bool NotifyViaSound { get; set; } = true;
+    public int SoundEffectNumber { get; set; } = 3;
 
     public bool ShowOverlay { get; set; } = true;
 

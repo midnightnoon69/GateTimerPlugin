@@ -4,6 +4,7 @@ using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.Command;
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
+using FFXIVClientStructs.FFXIV.Client.UI;
 using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Interface.Windowing;
@@ -235,6 +236,11 @@ public sealed class Plugin : IDalamudPlugin
         {
             ToastGui.ShowQuest(msg);
         }
+
+        if (Configuration.NotifyViaSound)
+        {
+            unsafe { UIGlobals.PlayChatSoundEffect((uint)Configuration.SoundEffectNumber); }
+        }
     }
 
     private void SendGateDetectedAlert(GateType gateType)
@@ -253,6 +259,11 @@ public sealed class Plugin : IDalamudPlugin
         if (Configuration.NotifyViaToast)
         {
             ToastGui.ShowQuest(msg);
+        }
+
+        if (Configuration.NotifyViaSound)
+        {
+            unsafe { UIGlobals.PlayChatSoundEffect((uint)Configuration.SoundEffectNumber); }
         }
     }
 
