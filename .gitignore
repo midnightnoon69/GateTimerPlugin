@@ -4,3 +4,4 @@ bin/
 *.user
 .claude/
 .idea/
+new_ideas.txt
