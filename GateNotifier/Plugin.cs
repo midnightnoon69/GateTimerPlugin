@@ -5,6 +5,7 @@ using Dalamud.Game.Command;
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
 using FFXIVClientStructs.FFXIV.Client.UI;
+using Dalamud.Game.Gui.Dtr;
 using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Interface.Windowing;
@@ -62,7 +63,7 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
 
         dtrEntry = DtrBar.Get("GateNotifier");
-        dtrEntry.OnClick = () => ConfigWindow.Toggle();
+        dtrEntry.OnClick = _ => ConfigWindow.Toggle();
 
         Framework.Update += OnFrameworkUpdate;
         ChatGui.ChatMessage += OnChatMessage;
