@@ -62,7 +62,7 @@ public class ConfigWindow : Window, IDisposable
         if (ImGui.CollapsingHeader("General", ImGuiTreeNodeFlags.DefaultOpen))
         {
             var overlay = configuration.ShowOverlay;
-            if (ImGui.Checkbox("Show countdown overlay", ref overlay))
+            if (ImGui.Checkbox("Show overlay window", ref overlay))
             {
                 configuration.ShowOverlay = overlay;
                 configuration.Save();

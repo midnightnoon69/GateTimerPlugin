@@ -30,6 +30,12 @@ public class OverlayWindow : Window, IDisposable
 
     public void Dispose() { }
 
+    public override void OnClose()
+    {
+        plugin.Configuration.ShowOverlay = false;
+        plugin.Configuration.Save();
+    }
+
     public override void PreDraw()
     {
         ImGui.PushStyleColor(ImGuiCol.WindowBg, GoldSaucerBg);
