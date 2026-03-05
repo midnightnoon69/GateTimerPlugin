@@ -2,7 +2,7 @@
   "Author": "Midnight Noon",
   "Name": "GATE Notifier",
   "Punchline": "Get notified about upcoming Gold Saucer GATEs.",
-  "Description": "Alerts you before Gold Saucer GATE events with configurable per-GATE preferences, countdown overlay, and chat/toast notifications. Use /gate to toggle overlay, /gate config for settings.",
+  "Description": "Alerts you before Gold Saucer GATE events with configurable per-GATE preferences, countdown overlay, DTR bar timer, and chat/toast notifications. Detects active GATEs via chat and GATE Keeper NPC dialogue for early reveals. Use /gate to toggle overlay, /gate config for settings.",
   "InternalName": "GateNotifier",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 14,
