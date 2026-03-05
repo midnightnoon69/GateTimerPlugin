@@ -31,6 +31,10 @@ public class Configuration : IPluginConfiguration
     public GateType? ActiveGateType { get; set; }
     public DateTime? ActiveGateDetectedAt { get; set; }
 
+    // Persisted next GATE detection (survives reloads)
+    public string? NextGateName { get; set; }
+    public GateType? NextGateType { get; set; }
+
     public void Initialize()
     {
         foreach (var gate in Enum.GetValues<GateType>())

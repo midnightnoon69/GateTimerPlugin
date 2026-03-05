@@ -69,9 +69,13 @@ public class OverlayWindow : Window, IDisposable
 
         // Countdown line with toggle arrow
         var arrow = expanded ? "\u25BC" : "\u25B2";
-        var countdownColor = hasTracked ? GoldText : DimText;
+        var nextName = plugin.LastDetectedGateName;
+        var countdownColor = nextName != null ? OrangeHighlight : hasTracked ? GoldText : DimText;
+        var countdownLabel = nextName != null
+            ? $"{arrow} {nextName} in {countdown}"
+            : $"{arrow} Next GATE in {countdown}";
         ImGui.PushStyleColor(ImGuiCol.Text, countdownColor);
-        if (ImGui.Selectable($"{arrow} Next GATE in {countdown}"))
+        if (ImGui.Selectable(countdownLabel))
         {
             expanded = !expanded;
         }
@@ -135,7 +139,7 @@ public class OverlayWindow : Window, IDisposable
 
         if (plugin.LastDetectedGateName != null)
         {
-            ImGui.PushStyleColor(ImGuiCol.Text, PurpleAccent);
+            ImGui.PushStyleColor(ImGuiCol.Text, OrangeHighlight);
             ImGui.TextUnformatted($"  {plugin.LastDetectedGateName}");
             ImGui.PopStyleColor();
         }

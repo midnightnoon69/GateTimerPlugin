@@ -44,8 +44,17 @@ public sealed class Plugin : IDalamudPlugin
 
     private TimeSpan previousTimeRemaining = GateScheduler.GetTimeUntilNextGate(DateTime.UtcNow);
     private DateTime lastAlertTime = DateTime.MinValue;
-    public string? LastDetectedGateName { get; private set; }
-    public GateType? LastDetectedGateType { get; private set; }
+    public string? LastDetectedGateName
+    {
+        get => Configuration.NextGateName;
+        private set => Configuration.NextGateName = value;
+    }
+
+    public GateType? LastDetectedGateType
+    {
+        get => Configuration.NextGateType;
+        private set => Configuration.NextGateType = value;
+    }
 
     public string? CurrentGateName
     {
@@ -180,15 +189,25 @@ public sealed class Plugin : IDalamudPlugin
         if (Configuration.ShowDtrBar)
         {
             dtrEntry.Shown = true;
-            dtrEntry.Text = $"GATE {timeRemaining.Minutes:D2}:{timeRemaining.Seconds:D2}";
 
-            // Tooltip: show detected or possible GATEs
-            if (CurrentGateName != null)
-                dtrEntry.Tooltip = $"Current: {CurrentGateName}";
+            var joinRemaining = GetJoinTimeRemaining();
+            if (CurrentGateName != null && joinRemaining != null)
+            {
+                var joinMin = (int)joinRemaining.Value.TotalMinutes;
+                var joinSec = joinRemaining.Value.Seconds;
+                dtrEntry.Text = $"{CurrentGateName} Join: {joinMin}:{joinSec:D2}";
+                dtrEntry.Tooltip = $"Registration open for {CurrentGateName}";
+            }
             else if (LastDetectedGateName != null)
-                dtrEntry.Tooltip = $"Next: {LastDetectedGateName}";
+            {
+                dtrEntry.Text = $"{LastDetectedGateName} Start: {timeRemaining.Minutes:D2}:{timeRemaining.Seconds:D2}";
+                dtrEntry.Tooltip = $"Next GATE: {LastDetectedGateName}";
+            }
             else
+            {
+                dtrEntry.Text = $"Next GATE: {timeRemaining.Minutes:D2}:{timeRemaining.Seconds:D2}";
                 dtrEntry.Tooltip = $"Possible: {string.Join(" / ", GetPossibleGates())}";
+            }
         }
         else
         {
@@ -246,6 +265,7 @@ public sealed class Plugin : IDalamudPlugin
                 {
                     LastDetectedGateName = gateName;
                     LastDetectedGateType = gateType;
+                    Configuration.Save();
                 }
 
                 if (Configuration.EnabledGates.TryGetValue(gateType, out var enabled) && enabled)
@@ -302,6 +322,7 @@ public sealed class Plugin : IDalamudPlugin
 
                     LastDetectedGateName = gateName;
                     LastDetectedGateType = gateType;
+                    Configuration.Save();
 
                     if (Configuration.EnabledGates.TryGetValue(gateType, out var enabled) && enabled)
                     {
