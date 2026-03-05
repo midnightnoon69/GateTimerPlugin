@@ -44,6 +44,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private TimeSpan previousTimeRemaining = GateScheduler.GetTimeUntilNextGate(DateTime.UtcNow);
     private DateTime lastAlertTime = DateTime.MinValue;
+    private bool previousOverlayOpen;
     public string? LastDetectedGateName
     {
         get => Configuration.NextGateName;
@@ -144,8 +145,18 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnFrameworkUpdate(IFramework framework)
     {
-        if (OverlayWindow.IsOpen != Configuration.ShowOverlay)
+        // Detect X button close: window was open last frame but now closed without config change
+        if (previousOverlayOpen && !OverlayWindow.IsOpen && Configuration.ShowOverlay)
+        {
+            Configuration.ShowOverlay = false;
+            Configuration.Save();
+        }
+        // Sync window to config (command, settings toggle)
+        else if (OverlayWindow.IsOpen != Configuration.ShowOverlay)
+        {
             OverlayWindow.IsOpen = Configuration.ShowOverlay;
+        }
+        previousOverlayOpen = OverlayWindow.IsOpen;
 
         var now = DateTime.UtcNow;
         var timeRemaining = GateScheduler.GetTimeUntilNextGate(now);
@@ -195,17 +206,18 @@ public sealed class Plugin : IDalamudPlugin
             {
                 var joinMin = (int)joinRemaining.Value.TotalMinutes;
                 var joinSec = joinRemaining.Value.Seconds;
-                dtrEntry.Text = $"{CurrentGateName} Join: {joinMin}:{joinSec:D2}";
+                dtrEntry.Text = $"{CurrentGateName} Join {joinMin}:{joinSec:D2}";
+
                 dtrEntry.Tooltip = $"Registration open for {CurrentGateName}";
             }
             else if (LastDetectedGateName != null)
             {
-                dtrEntry.Text = $"{LastDetectedGateName} Start: {timeRemaining.Minutes:D2}:{timeRemaining.Seconds:D2}";
+                dtrEntry.Text = $"{LastDetectedGateName} T-{timeRemaining.Minutes}:{timeRemaining.Seconds:D2}";
                 dtrEntry.Tooltip = $"Next GATE: {LastDetectedGateName}";
             }
             else
             {
-                dtrEntry.Text = $"Next GATE: {timeRemaining.Minutes:D2}:{timeRemaining.Seconds:D2}";
+                dtrEntry.Text = $"GATE T-{timeRemaining.Minutes}:{timeRemaining.Seconds:D2}";
                 dtrEntry.Tooltip = $"Possible: {string.Join(" / ", GetPossibleGates())}";
             }
         }
@@ -376,15 +388,15 @@ public sealed class Plugin : IDalamudPlugin
         if (LastDetectedGateName != null)
         {
             msg = minutes == 1
-                ? $"[GATE] {LastDetectedGateName} starts in {minutes} minute!"
-                : $"[GATE] {LastDetectedGateName} starts in {minutes} minutes!";
+                ? $"[Gold Saucer] {LastDetectedGateName} starts in {minutes} minute!"
+                : $"[Gold Saucer] {LastDetectedGateName} starts in {minutes} minutes!";
         }
         else
         {
             var possible = string.Join(" / ", GetPossibleGates());
             msg = minutes == 1
-                ? $"[GATE] {minutes} minute! Possible: {possible}"
-                : $"[GATE] {minutes} minutes! Possible: {possible}";
+                ? $"[Gold Saucer] {minutes} minute! Possible: {possible}"
+                : $"[Gold Saucer] {minutes} minutes! Possible: {possible}";
         }
 
         if (Configuration.NotifyViaChat)
@@ -409,7 +421,7 @@ public sealed class Plugin : IDalamudPlugin
             return;
 
         var name = GateDefinitions.DisplayNames[gateType];
-        var msg = $"[GATE] Upcoming GATE: {name}!";
+        var msg = $"[Gold Saucer] Upcoming GATE: {name}!";
 
         if (Configuration.NotifyViaChat)
         {

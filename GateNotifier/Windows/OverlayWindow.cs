@@ -26,6 +26,7 @@ public class OverlayWindow : Window, IDisposable
         : base("GATE Timer##GateOverlay", ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoCollapse)
     {
         this.plugin = plugin;
+        ShowCloseButton = true;
     }
 
     public void Dispose() { }
