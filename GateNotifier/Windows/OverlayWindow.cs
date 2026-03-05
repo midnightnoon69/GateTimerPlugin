@@ -96,9 +96,21 @@ public class OverlayWindow : Window, IDisposable
 
         if (plugin.CurrentGateName != null)
         {
-            ImGui.PushStyleColor(ImGuiCol.Text, OrangeHighlight);
-            ImGui.TextUnformatted($"  {plugin.CurrentGateName}");
-            ImGui.PopStyleColor();
+            var joinRemaining = plugin.GetJoinTimeRemaining();
+            if (joinRemaining != null)
+            {
+                var joinMin = (int)joinRemaining.Value.TotalMinutes;
+                var joinSec = joinRemaining.Value.Seconds;
+                ImGui.PushStyleColor(ImGuiCol.Text, OrangeHighlight);
+                ImGui.TextUnformatted($"  {plugin.CurrentGateName}  —  Join: {joinMin}:{joinSec:D2}");
+                ImGui.PopStyleColor();
+            }
+            else
+            {
+                ImGui.PushStyleColor(ImGuiCol.Text, DimText);
+                ImGui.TextUnformatted($"  {plugin.CurrentGateName}  —  Registration closed");
+                ImGui.PopStyleColor();
+            }
         }
         else
         {

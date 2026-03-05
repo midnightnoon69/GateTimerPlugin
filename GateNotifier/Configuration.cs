@@ -26,6 +26,11 @@ public class Configuration : IPluginConfiguration
 
     public bool ShowDtrBar { get; set; } = true;
 
+    // Persisted active GATE state (survives reloads)
+    public string? ActiveGateName { get; set; }
+    public GateType? ActiveGateType { get; set; }
+    public DateTime? ActiveGateDetectedAt { get; set; }
+
     public void Initialize()
     {
         foreach (var gate in Enum.GetValues<GateType>())

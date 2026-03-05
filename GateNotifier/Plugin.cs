@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.Command;
 using Dalamud.Game.Text;
@@ -39,8 +40,24 @@ public sealed class Plugin : IDalamudPlugin
     private DateTime lastAlertTime = DateTime.MinValue;
     public string? LastDetectedGateName { get; private set; }
     public GateType? LastDetectedGateType { get; private set; }
-    public string? CurrentGateName { get; private set; }
-    public GateType? CurrentGateType { get; private set; }
+
+    public string? CurrentGateName
+    {
+        get => Configuration.ActiveGateName;
+        private set => Configuration.ActiveGateName = value;
+    }
+
+    public GateType? CurrentGateType
+    {
+        get => Configuration.ActiveGateType;
+        private set => Configuration.ActiveGateType = value;
+    }
+
+    public DateTime? CurrentGateDetectedAt
+    {
+        get => Configuration.ActiveGateDetectedAt;
+        private set => Configuration.ActiveGateDetectedAt = value;
+    }
 
     public Plugin()
     {
@@ -59,8 +76,8 @@ public sealed class Plugin : IDalamudPlugin
         });
 
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
-        PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUi;
-        PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
+        PluginInterface.UiBuilder.OpenConfigUi += OpenConfigUi;
+        PluginInterface.UiBuilder.OpenMainUi += OpenMainUi;
 
         dtrEntry = DtrBar.Get("GateNotifier");
         dtrEntry.OnClick = _ => ConfigWindow.Toggle();
@@ -79,8 +96,8 @@ public sealed class Plugin : IDalamudPlugin
         ChatGui.ChatMessage -= OnChatMessage;
 
         PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
-        PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
-        PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
+        PluginInterface.UiBuilder.OpenConfigUi -= OpenConfigUi;
+        PluginInterface.UiBuilder.OpenMainUi -= OpenMainUi;
 
         WindowSystem.RemoveAllWindows();
 
@@ -105,7 +122,8 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnFrameworkUpdate(IFramework framework)
     {
-        OverlayWindow.IsOpen = Configuration.ShowOverlay;
+        if (OverlayWindow.IsOpen != Configuration.ShowOverlay)
+            OverlayWindow.IsOpen = Configuration.ShowOverlay;
 
         var now = DateTime.UtcNow;
         var timeRemaining = GateScheduler.GetTimeUntilNextGate(now);
@@ -115,8 +133,23 @@ public sealed class Plugin : IDalamudPlugin
         {
             CurrentGateName = LastDetectedGateName;
             CurrentGateType = LastDetectedGateType;
+            CurrentGateDetectedAt = LastDetectedGateName != null ? now : null;
             LastDetectedGateName = null;
             LastDetectedGateType = null;
+            Configuration.Save();
+        }
+
+        // Clear current GATE when its registration window has expired
+        if (CurrentGateType != null && CurrentGateDetectedAt != null)
+        {
+            var windowSeconds = GateDefinitions.JoinWindowSeconds[CurrentGateType.Value];
+            if ((now - CurrentGateDetectedAt.Value).TotalSeconds >= windowSeconds)
+            {
+                CurrentGateName = null;
+                CurrentGateType = null;
+                CurrentGateDetectedAt = null;
+                Configuration.Save();
+            }
         }
 
         if (Configuration.EnableTimerAlerts)
@@ -155,18 +188,35 @@ public sealed class Plugin : IDalamudPlugin
         if (!Configuration.EnableChatDetection)
             return;
 
-        // GATE announcements use SystemMessage base type (57) but the raw value
-        // may include flag bits (e.g. 2105 = 0x0839). Check the base type only.
-        if (((int)type & 0x7F) != (int)XivChatType.SystemMessage)
+        // GATE announcements use chat type 68 (0x0044), a system announcement type.
+        if (((int)type & 0x7F) != 68)
             return;
 
         var text = message.TextValue;
+
+        // Detect registration closing
+        if (text.Contains("Entries for the special limited-time event are now closed", StringComparison.OrdinalIgnoreCase))
+        {
+            if (CurrentGateName != null && CurrentGateDetectedAt != null)
+            {
+                var duration = (DateTime.UtcNow - CurrentGateDetectedAt.Value).TotalSeconds;
+                Log.Information($"GATE registration closed: {CurrentGateName} after {duration:F0}s");
+                LogGateTiming(CurrentGateName, CurrentGateDetectedAt.Value, DateTime.UtcNow, duration);
+            }
+
+            CurrentGateName = null;
+            CurrentGateType = null;
+            CurrentGateDetectedAt = null;
+            Configuration.Save();
+            return;
+        }
+
         foreach (var (gateType, substring) in GateDefinitions.ChatSubstrings)
         {
             if (text.Contains(substring, StringComparison.OrdinalIgnoreCase))
             {
                 var gateName = GateDefinitions.DisplayNames[gateType];
-                Log.Information($"GATE detected: {gateName} (chat type {(int)type})");
+                Log.Information($"GATE detected: {gateName}");
 
                 var timeRemaining = GateScheduler.GetTimeUntilNextGate(DateTime.UtcNow);
 
@@ -176,6 +226,8 @@ public sealed class Plugin : IDalamudPlugin
                 {
                     CurrentGateName = gateName;
                     CurrentGateType = gateType;
+                    CurrentGateDetectedAt = DateTime.UtcNow;
+                    Configuration.Save();
                 }
                 else
                 {
@@ -310,6 +362,41 @@ public sealed class Plugin : IDalamudPlugin
         return GateScheduler.GetUpcomingSlots(DateTime.UtcNow, count);
     }
 
+    public TimeSpan? GetJoinTimeRemaining()
+    {
+        if (CurrentGateType == null || CurrentGateDetectedAt == null)
+            return null;
+
+        var windowSeconds = GateDefinitions.JoinWindowSeconds[CurrentGateType.Value];
+        var elapsed = (DateTime.UtcNow - CurrentGateDetectedAt.Value).TotalSeconds;
+        var remaining = windowSeconds - elapsed;
+        return remaining > 0 ? TimeSpan.FromSeconds(remaining) : null;
+    }
+
+    private void LogGateTiming(string gateName, DateTime openedUtc, DateTime closedUtc, double durationSeconds)
+    {
+        try
+        {
+            var dir = PluginInterface.GetPluginConfigDirectory();
+            var path = Path.Combine(dir, "gate_timings.csv");
+            var exists = File.Exists(path);
+            using var writer = new StreamWriter(path, append: true);
+            if (!exists)
+                writer.WriteLine("gate,opened_utc,closed_utc,duration_seconds");
+            writer.WriteLine($"{gateName},{openedUtc:O},{closedUtc:O},{durationSeconds:F1}");
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Failed to log gate timing: {ex.Message}");
+        }
+    }
+
+    public void OpenConfigUi() => ConfigWindow.IsOpen = true;
+    public void OpenMainUi()
+    {
+        Configuration.ShowOverlay = true;
+        Configuration.Save();
+    }
+
     public void ToggleConfigUi() => ConfigWindow.Toggle();
-    public void ToggleMainUi() => OverlayWindow.Toggle();
 }
