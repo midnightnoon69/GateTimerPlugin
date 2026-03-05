@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text.RegularExpressions;
 using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Game.ClientState.Conditions;
@@ -267,6 +268,8 @@ public sealed class Plugin : IDalamudPlugin
         ReadTalkAddon((AtkUnitBase*)(nint)args.Addon);
     }
 
+    private bool inGateKeeperDialogue;
+
     private unsafe void ReadTalkAddon(AtkUnitBase* addon)
     {
         if (addon == null)
@@ -282,27 +285,49 @@ public sealed class Plugin : IDalamudPlugin
         var speaker = speakerNode->NodeText.StringPtr.AsDalamudSeString().TextValue.Trim();
         var text = textNode->NodeText.StringPtr.AsDalamudSeString().TextValue.Trim();
 
-        // Only process GATE Keeper dialogue
-        if (!speaker.Contains("GATE Keeper", StringComparison.OrdinalIgnoreCase))
-            return;
-
-        foreach (var (gateType, substring) in GateDefinitions.ChatSubstrings)
+        if (speaker.Contains("GATE Keeper", StringComparison.OrdinalIgnoreCase))
         {
-            if (text.Contains(substring, StringComparison.OrdinalIgnoreCase))
+            inGateKeeperDialogue = true;
+
+            // Only detect from "next scheduled event" dialogue, not current/active GATE dialogue
+            if (!text.Contains("next scheduled event", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            foreach (var (gateType, substring) in GateDefinitions.ChatSubstrings)
             {
-                var gateName = GateDefinitions.DisplayNames[gateType];
-                Log.Information($"GATE Keeper revealed next GATE: {gateName}");
-
-                LastDetectedGateName = gateName;
-                LastDetectedGateType = gateType;
-
-                if (Configuration.EnabledGates.TryGetValue(gateType, out var enabled) && enabled)
+                if (text.Contains(substring, StringComparison.OrdinalIgnoreCase))
                 {
-                    SendGateDetectedAlert(gateType);
-                }
+                    var gateName = GateDefinitions.DisplayNames[gateType];
+                    Log.Information($"GATE Keeper revealed next GATE: {gateName}");
 
-                break;
+                    LastDetectedGateName = gateName;
+                    LastDetectedGateType = gateType;
+
+                    if (Configuration.EnabledGates.TryGetValue(gateType, out var enabled) && enabled)
+                    {
+                        SendGateDetectedAlert(gateType);
+                    }
+
+                    break;
+                }
             }
+        }
+        else if (inGateKeeperDialogue && string.IsNullOrEmpty(speaker))
+        {
+            // Second dialogue line: "The next GATE will be held at 10:40 p.m. in Round Square."
+            var match = Regex.Match(text, @"at (\d{1,2}:\d{2} [ap]\.m\.) in (.+)\.", RegexOptions.IgnoreCase);
+            if (match.Success)
+            {
+                var time = match.Groups[1].Value;
+                var location = match.Groups[2].Value;
+                Log.Information($"GATE Keeper: next GATE at {time} in {location}");
+            }
+
+            inGateKeeperDialogue = false;
+        }
+        else
+        {
+            inGateKeeperDialogue = false;
         }
     }
 

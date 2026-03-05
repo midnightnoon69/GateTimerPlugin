@@ -38,6 +38,15 @@ public static class GateDefinitions
         { 40, new[] { "The Slice Is Right", "Leap of Faith", "Air Force One" } },
     };
 
+    public static readonly Dictionary<GateType, string> Locations = new()
+    {
+        { GateType.TheSliceIsRight, "Event Square" },
+        { GateType.AirForceOne, "Round Square" },
+        { GateType.Cliffhanger, "Round Square" },
+        { GateType.LeapOfFaith, "Round Square" },
+        { GateType.AnyWayTheWindBlows, "Event Square" },
+    };
+
     /// <summary>
     /// How long (in seconds) each GATE's registration window stays open after announcement.
     /// Event Square GATEs (~2 min), others (~10 min). Values are approximate — verify in-game.
