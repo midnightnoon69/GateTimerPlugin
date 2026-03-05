@@ -1,16 +1,20 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Dalamud.Game.Addon.Lifecycle;
+using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.Command;
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
 using FFXIVClientStructs.FFXIV.Client.UI;
+using FFXIVClientStructs.FFXIV.Component.GUI;
 using Dalamud.Game.Gui.Dtr;
 using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin.Services;
+using Dalamud.Utility;
 using GateNotifier.Windows;
 
 namespace GateNotifier;
@@ -24,6 +28,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IToastGui ToastGui { get; private set; } = null!;
     [PluginService] internal static ICondition Condition { get; private set; } = null!;
     [PluginService] internal static IDtrBar DtrBar { get; private set; } = null!;
+    [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
 
     private const string CommandName = "/gate";
@@ -85,6 +90,10 @@ public sealed class Plugin : IDalamudPlugin
         Framework.Update += OnFrameworkUpdate;
         ChatGui.ChatMessage += OnChatMessage;
 
+        AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "Talk", OnTalkPostSetup);
+        AddonLifecycle.RegisterListener(AddonEvent.PostRefresh, "Talk", OnTalkPostRefresh);
+
+
         Log.Information("GATE Notifier loaded.");
     }
 
@@ -94,6 +103,9 @@ public sealed class Plugin : IDalamudPlugin
 
         Framework.Update -= OnFrameworkUpdate;
         ChatGui.ChatMessage -= OnChatMessage;
+
+        AddonLifecycle.UnregisterListener(OnTalkPostSetup);
+        AddonLifecycle.UnregisterListener(OnTalkPostRefresh);
 
         PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
         PluginInterface.UiBuilder.OpenConfigUi -= OpenConfigUi;
@@ -234,6 +246,55 @@ public sealed class Plugin : IDalamudPlugin
                     LastDetectedGateName = gateName;
                     LastDetectedGateType = gateType;
                 }
+
+                if (Configuration.EnabledGates.TryGetValue(gateType, out var enabled) && enabled)
+                {
+                    SendGateDetectedAlert(gateType);
+                }
+
+                break;
+            }
+        }
+    }
+
+    private unsafe void OnTalkPostSetup(AddonEvent type, AddonArgs args)
+    {
+        ReadTalkAddon((AtkUnitBase*)(nint)args.Addon);
+    }
+
+    private unsafe void OnTalkPostRefresh(AddonEvent type, AddonArgs args)
+    {
+        ReadTalkAddon((AtkUnitBase*)(nint)args.Addon);
+    }
+
+    private unsafe void ReadTalkAddon(AtkUnitBase* addon)
+    {
+        if (addon == null)
+            return;
+
+        var talkAddon = (AddonTalk*)addon;
+        var speakerNode = talkAddon->AtkTextNode220;
+        var textNode = talkAddon->AtkTextNode228;
+
+        if (speakerNode == null || textNode == null)
+            return;
+
+        var speaker = speakerNode->NodeText.StringPtr.AsDalamudSeString().TextValue.Trim();
+        var text = textNode->NodeText.StringPtr.AsDalamudSeString().TextValue.Trim();
+
+        // Only process GATE Keeper dialogue
+        if (!speaker.Contains("GATE Keeper", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        foreach (var (gateType, substring) in GateDefinitions.ChatSubstrings)
+        {
+            if (text.Contains(substring, StringComparison.OrdinalIgnoreCase))
+            {
+                var gateName = GateDefinitions.DisplayNames[gateType];
+                Log.Information($"GATE Keeper revealed next GATE: {gateName}");
+
+                LastDetectedGateName = gateName;
+                LastDetectedGateType = gateType;
 
                 if (Configuration.EnabledGates.TryGetValue(gateType, out var enabled) && enabled)
                 {
