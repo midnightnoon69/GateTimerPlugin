@@ -42,21 +42,22 @@ public static class GateDefinitions
     {
         { GateType.TheSliceIsRight, "Event Square" },
         { GateType.AirForceOne, "Round Square" },
-        { GateType.Cliffhanger, "Round Square" },
+        { GateType.Cliffhanger, "Wonder Square East" },
         { GateType.LeapOfFaith, "Round Square" },
         { GateType.AnyWayTheWindBlows, "Event Square" },
     };
 
     /// <summary>
     /// How long (in seconds) each GATE's registration window stays open after announcement.
-    /// Event Square GATEs (~2 min), others (~10 min). Values are approximate — verify in-game.
+    /// Measured from chat log data (2026-03-05, ~30 samples).
+    /// Cliffhanger has no close message — registration stays open until the event concludes.
     /// </summary>
     public static readonly Dictionary<GateType, int> JoinWindowSeconds = new()
     {
-        { GateType.TheSliceIsRight, 120 },
-        { GateType.AirForceOne, 600 },
-        { GateType.Cliffhanger, 600 },
-        { GateType.LeapOfFaith, 600 },
-        { GateType.AnyWayTheWindBlows, 120 },
+        { GateType.TheSliceIsRight, 120 },    // 2 min (Event Square)
+        { GateType.AirForceOne, 600 },         // 10 min (Round Square)
+        { GateType.Cliffhanger, 600 },         // 10 min (Wonder Square East, no close msg, runs til concluded)
+        { GateType.LeapOfFaith, 490 },         // ~8 min 10 sec (Round Square)
+        { GateType.AnyWayTheWindBlows, 120 },  // 2 min (Event Square)
     };
 }

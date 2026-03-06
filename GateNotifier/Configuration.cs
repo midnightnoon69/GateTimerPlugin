@@ -10,7 +10,7 @@ public class Configuration : IPluginConfiguration
     public int Version { get; set; } = 0;
 
     public Dictionary<GateType, bool> EnabledGates { get; set; } = new();
-    public List<int> AlertMinutesBefore { get; set; } = new() { 5, 1 };
+    public List<int> AlertMinutesBefore { get; set; } = new();
 
     public bool NotifyViaChat { get; set; } = true;
     public bool NotifyViaToast { get; set; } = true;
@@ -26,6 +26,10 @@ public class Configuration : IPluginConfiguration
 
     public bool ShowDtrBar { get; set; } = true;
 
+    // API sharing settings
+    public bool EnableApiSharing { get; set; } = true;
+    public string ApiUrl { get; set; } = "http://localhost:5000";
+
     // Persisted active GATE state (survives reloads)
     public string? ActiveGateName { get; set; }
     public GateType? ActiveGateType { get; set; }
@@ -40,6 +44,19 @@ public class Configuration : IPluginConfiguration
         foreach (var gate in Enum.GetValues<GateType>())
         {
             EnabledGates.TryAdd(gate, true);
+        }
+
+        // Deduplicate alert list (fixes bug where deserializer appended onto field defaults)
+        if (AlertMinutesBefore.Count > 0)
+        {
+            var deduped = new HashSet<int>(AlertMinutesBefore);
+            AlertMinutesBefore.Clear();
+            AlertMinutesBefore.AddRange(deduped);
+            AlertMinutesBefore.Sort((a, b) => b.CompareTo(a));
+        }
+        else
+        {
+            AlertMinutesBefore.AddRange(new[] { 5, 1 });
         }
     }
 

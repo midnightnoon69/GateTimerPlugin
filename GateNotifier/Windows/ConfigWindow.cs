@@ -183,5 +183,33 @@ public class ConfigWindow : Window, IDisposable
             }
         }
 
+        ImGui.Spacing();
+
+        // API sharing
+        if (ImGui.CollapsingHeader("Community Sharing", ImGuiTreeNodeFlags.DefaultOpen))
+        {
+            var apiEnabled = configuration.EnableApiSharing;
+            if (ImGui.Checkbox("Share and receive GATE reports via API", ref apiEnabled))
+            {
+                configuration.EnableApiSharing = apiEnabled;
+                configuration.Save();
+            }
+
+            if (configuration.EnableApiSharing)
+            {
+                ImGui.SetNextItemWidth(250);
+                var apiUrl = configuration.ApiUrl;
+                if (ImGui.InputText("API URL", ref apiUrl, 256))
+                {
+                    configuration.ApiUrl = apiUrl;
+                    configuration.Save();
+                }
+
+                ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.60f, 0.55f, 0.65f, 1.00f));
+                ImGui.TextWrapped("When enabled, detected GATEs are shared with other users and you receive reports from players in Gold Saucer.");
+                ImGui.PopStyleColor();
+            }
+        }
+
     }
 }

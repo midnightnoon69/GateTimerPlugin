@@ -30,6 +30,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static ICondition Condition { get; private set; } = null!;
     [PluginService] internal static IDtrBar DtrBar { get; private set; } = null!;
     [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
+    [PluginService] internal static IPlayerState PlayerState { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
 
     private const string CommandName = "/gate";
@@ -41,6 +42,7 @@ public sealed class Plugin : IDalamudPlugin
     private OverlayWindow OverlayWindow { get; init; }
 
     private readonly IDtrBarEntry dtrEntry;
+    public ApiService ApiService { get; init; }
 
     private TimeSpan previousTimeRemaining = GateScheduler.GetTimeUntilNextGate(DateTime.UtcNow);
     private DateTime lastAlertTime = DateTime.MinValue;
@@ -80,6 +82,8 @@ public sealed class Plugin : IDalamudPlugin
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         Configuration.Initialize();
 
+        ApiService = new ApiService(Configuration, Log);
+
         ConfigWindow = new ConfigWindow(this);
         OverlayWindow = new OverlayWindow(this);
 
@@ -105,7 +109,8 @@ public sealed class Plugin : IDalamudPlugin
         AddonLifecycle.RegisterListener(AddonEvent.PostRefresh, "Talk", OnTalkPostRefresh);
 
 
-        Log.Information("GATE Notifier loaded.");
+        var version = PluginInterface.Manifest.AssemblyVersion;
+        Log.Information($"GATE Notifier v{version} loaded.");
     }
 
     public void Dispose()
@@ -128,6 +133,8 @@ public sealed class Plugin : IDalamudPlugin
         OverlayWindow.Dispose();
 
         CommandManager.RemoveHandler(CommandName);
+
+        ApiService.Dispose();
     }
 
     private void OnCommand(string command, string args)
@@ -169,6 +176,7 @@ public sealed class Plugin : IDalamudPlugin
             CurrentGateDetectedAt = LastDetectedGateName != null ? now : null;
             LastDetectedGateName = null;
             LastDetectedGateType = null;
+            ApiService.ClearApiState();
             Configuration.Save();
         }
 
@@ -195,6 +203,24 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         previousTimeRemaining = timeRemaining;
+
+        // Poll API if no local detection for next GATE
+        if (LastDetectedGateName == null)
+        {
+            var world = GetCurrentWorldName();
+            ApiService.PollIfNeeded(world);
+
+            // If API has data and it expired, clear it
+            if (ApiService.ApiGateExpiresAt != null && ApiService.ApiGateExpiresAt <= now)
+            {
+                ApiService.ClearApiState();
+            }
+        }
+        else
+        {
+            // Local detection takes priority — clear API state
+            ApiService.ClearApiState();
+        }
 
         // Update DTR bar entry
         if (Configuration.ShowDtrBar)
@@ -238,8 +264,11 @@ public sealed class Plugin : IDalamudPlugin
 
         var text = message.TextValue;
 
-        // Detect registration closing
-        if (text.Contains("Entries for the special limited-time event are now closed", StringComparison.OrdinalIgnoreCase))
+        // Detect registration closing (two variants by venue)
+        // Round Square: "Entries for the special limited-time event are now closed"
+        // Event Square: "Entries for the main stage event are now closed"
+        if (text.Contains("Entries for the special limited-time event are now closed", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("Entries for the main stage event are now closed", StringComparison.OrdinalIgnoreCase))
         {
             if (CurrentGateName != null && CurrentGateDetectedAt != null)
             {
@@ -255,10 +284,55 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
+        // Detect GATE concluded (end of the event itself)
+        if (text.Contains("The special limited-time event has concluded", StringComparison.OrdinalIgnoreCase))
+        {
+            Log.Information("GATE concluded.");
+            return;
+        }
+
+        // Detect "is now underway" — confirms active GATE with name in quotes
+        // e.g. 'The limited-time event "The Slice Is Right" is now underway in Event Square.'
+        if (text.Contains("is now underway", StringComparison.OrdinalIgnoreCase))
+        {
+            foreach (var (gateType, substring) in GateDefinitions.ChatSubstrings)
+            {
+                if (text.Contains(substring, StringComparison.OrdinalIgnoreCase))
+                {
+                    var gateName = GateDefinitions.DisplayNames[gateType];
+                    Log.Information($"GATE now underway: {gateName}");
+
+                    if (CurrentGateName == null)
+                    {
+                        CurrentGateName = gateName;
+                        CurrentGateType = gateType;
+                        CurrentGateDetectedAt = DateTime.UtcNow;
+                        Configuration.Save();
+
+                        var world = GetCurrentWorldName();
+                        if (world != null)
+                            ApiService.ReportGate(world, gateName, GetCurrentSlot());
+
+                        if (Configuration.EnabledGates.TryGetValue(gateType, out var enabled) && enabled)
+                        {
+                            SendGateDetectedAlert(gateType);
+                        }
+                    }
+
+                    break;
+                }
+            }
+
+            return;
+        }
+
+        // Detect GATE announcement (pre-start)
+        var matched = false;
         foreach (var (gateType, substring) in GateDefinitions.ChatSubstrings)
         {
             if (text.Contains(substring, StringComparison.OrdinalIgnoreCase))
             {
+                matched = true;
                 var gateName = GateDefinitions.DisplayNames[gateType];
                 Log.Information($"GATE detected: {gateName}");
 
@@ -272,12 +346,21 @@ public sealed class Plugin : IDalamudPlugin
                     CurrentGateType = gateType;
                     CurrentGateDetectedAt = DateTime.UtcNow;
                     Configuration.Save();
+
+                    var world = GetCurrentWorldName();
+                    if (world != null)
+                        ApiService.ReportGate(world, gateName, GetCurrentSlot());
                 }
                 else
                 {
                     LastDetectedGateName = gateName;
                     LastDetectedGateType = gateType;
                     Configuration.Save();
+
+                    var nextSlot = GateScheduler.GetNextGateTime(DateTime.UtcNow);
+                    var world = GetCurrentWorldName();
+                    if (world != null)
+                        ApiService.ReportGate(world, gateName, nextSlot.Minute);
                 }
 
                 if (Configuration.EnabledGates.TryGetValue(gateType, out var enabled) && enabled)
@@ -287,6 +370,11 @@ public sealed class Plugin : IDalamudPlugin
 
                 break;
             }
+        }
+
+        if (!matched)
+        {
+            Log.Information($"[GoldSaucer] Unhandled announcement: {text}");
         }
     }
 
@@ -335,6 +423,12 @@ public sealed class Plugin : IDalamudPlugin
                     LastDetectedGateName = gateName;
                     LastDetectedGateType = gateType;
                     Configuration.Save();
+
+                    var nextSlot = GateScheduler.GetNextGateTime(DateTime.UtcNow);
+                    var world = GetCurrentWorldName();
+                    Log.Information($"API POST: world={world ?? "null"}, gate={gateName}, slot={nextSlot.Minute}");
+                    if (world != null)
+                        ApiService.ReportGate(world, gateName, nextSlot.Minute);
 
                     if (Configuration.EnabledGates.TryGetValue(gateType, out var enabled) && enabled)
                     {
@@ -508,6 +602,22 @@ public sealed class Plugin : IDalamudPlugin
         {
             Log.Error($"Failed to log gate timing: {ex.Message}");
         }
+    }
+
+    private string? GetCurrentWorldName()
+    {
+        if (!PlayerState.IsLoaded)
+            return null;
+        var world = PlayerState.CurrentWorld.ValueNullable;
+        if (world == null)
+            return null;
+        var name = world.Value.Name.ExtractText();
+        return string.IsNullOrEmpty(name) ? null : name;
+    }
+
+    private int GetCurrentSlot()
+    {
+        return (DateTime.UtcNow.Minute / 20) * 20;
     }
 
     public void OpenConfigUi() => ConfigWindow.IsOpen = true;

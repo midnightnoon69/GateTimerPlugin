@@ -21,6 +21,7 @@ public class OverlayWindow : Window, IDisposable
     private static readonly Vector4 TitleBg = new(0.35f, 0.15f, 0.50f, 0.90f);
     private static readonly Vector4 SeparatorColor = new(0.85f, 0.65f, 0.13f, 0.40f);
     private static readonly Vector4 OrangeHighlight = new(0.95f, 0.60f, 0.15f, 1.00f);
+    private static readonly Vector4 ApiBlue = new(0.40f, 0.70f, 1.00f, 1.00f);
 
     public OverlayWindow(Plugin plugin)
         : base("GATE Timer##GateOverlay", ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoCollapse)
@@ -68,12 +69,24 @@ public class OverlayWindow : Window, IDisposable
         var possibleGates = plugin.GetPossibleGates();
         var hasTracked = plugin.HasEnabledGateInSlot(possibleGates);
 
+        // Determine next GATE name — local detection takes priority over API
+        var nextName = plugin.LastDetectedGateName;
+        var isApiSourced = false;
+        if (nextName == null && plugin.ApiService.ApiGateName != null)
+        {
+            nextName = plugin.ApiService.ApiGateName;
+            isApiSourced = true;
+        }
+
         // Countdown line with toggle arrow
         var arrow = expanded ? "\u25BC" : "\u25B2";
-        var nextName = plugin.LastDetectedGateName;
-        var countdownColor = nextName != null ? OrangeHighlight : hasTracked ? GoldText : DimText;
+        var countdownColor = nextName != null
+            ? (isApiSourced ? ApiBlue : OrangeHighlight)
+            : hasTracked ? GoldText : DimText;
         var countdownLabel = nextName != null
-            ? $"{arrow} {nextName} in {countdown}"
+            ? (isApiSourced
+                ? $"{arrow} {nextName} (reported) in {countdown}"
+                : $"{arrow} {nextName} in {countdown}")
             : $"{arrow} Next GATE in {countdown}";
         ImGui.PushStyleColor(ImGuiCol.Text, countdownColor);
         if (ImGui.Selectable(countdownLabel))
@@ -144,6 +157,12 @@ public class OverlayWindow : Window, IDisposable
             ImGui.TextUnformatted($"  {plugin.LastDetectedGateName}");
             ImGui.PopStyleColor();
         }
+        else if (plugin.ApiService.ApiGateName != null)
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, ApiBlue);
+            ImGui.TextUnformatted($"  {plugin.ApiService.ApiGateName} (reported)");
+            ImGui.PopStyleColor();
+        }
         else
         {
             foreach (var gate in possibleGates)
@@ -156,7 +175,10 @@ public class OverlayWindow : Window, IDisposable
 
             ImGui.Spacing();
             ImGui.PushStyleColor(ImGuiCol.Text, DimText);
-            ImGui.TextWrapped("One of the above will be chosen at random.\nVisit Gold Saucer for live detection.");
+            var hint = plugin.Configuration.EnableApiSharing
+                ? "One of the above will be chosen at random.\nWaiting for community reports..."
+                : "One of the above will be chosen at random.\nVisit Gold Saucer for live detection.";
+            ImGui.TextWrapped(hint);
             ImGui.PopStyleColor();
         }
 
