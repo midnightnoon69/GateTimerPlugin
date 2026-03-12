@@ -179,9 +179,10 @@ public sealed class Plugin : IDalamudPlugin
         {
             ScanGoldSaucerMemory();
         }
-        else if (trimmed.Equals("post", StringComparison.OrdinalIgnoreCase))
+        else if (trimmed.StartsWith("post", StringComparison.OrdinalIgnoreCase))
         {
-            ForceDirectorPost();
+            var courseName = trimmed.Length > 4 ? trimmed[4..].Trim() : null;
+            ForceDirectorPost(courseName);
         }
         else
         {
@@ -218,13 +219,18 @@ public sealed class Plugin : IDalamudPlugin
         // When a new cycle starts (countdown wrapped around), promote detected GATE to current
         if (timeRemaining > previousTimeRemaining)
         {
-            CurrentGateName = LastDetectedGateName;
-            CurrentGateType = LastDetectedGateType;
-            CurrentGateDetectedAt = LastDetectedGateName != null ? now : null;
+            // Only promote if current isn't already set (chat "underway" may have set it first)
+            if (CurrentGateName == null)
+            {
+                CurrentGateName = LastDetectedGateName;
+                CurrentGateType = LastDetectedGateType;
+                CurrentGateDetectedAt = LastDetectedGateName != null ? now : null;
+            }
             LastDetectedGateName = null;
             LastDetectedGateType = null;
             ApiService.ClearApiState();
             Configuration.Save();
+            Log.Information($"{Tag} Slot boundary: current={CurrentGateName ?? "none"}, lastDetected cleared");
         }
 
         // Clear current GATE when its registration window has expired
@@ -233,6 +239,7 @@ public sealed class Plugin : IDalamudPlugin
             var windowSeconds = GateDefinitions.JoinWindowSeconds[CurrentGateType.Value];
             if ((now - CurrentGateDetectedAt.Value).TotalSeconds >= windowSeconds)
             {
+                Log.Information($"{Tag} State: join window expired for {CurrentGateName}");
                 CurrentGateName = null;
                 CurrentGateType = null;
                 CurrentGateDetectedAt = null;
@@ -351,6 +358,7 @@ public sealed class Plugin : IDalamudPlugin
                         $"{CurrentGateName}|{duration:F1}s|slot={GetCurrentSlot()}");
             }
 
+            Log.Information($"{Tag} State: registration closed, clearing current={CurrentGateName}");
             CurrentGateName = null;
             CurrentGateType = null;
             CurrentGateDetectedAt = null;
@@ -361,7 +369,7 @@ public sealed class Plugin : IDalamudPlugin
         // Detect GATE concluded (end of the event itself)
         if (text.Contains("The special limited-time event has concluded", StringComparison.OrdinalIgnoreCase))
         {
-            Log.Information($"{Tag} GATE concluded.");
+            Log.Information($"{Tag} State: GATE concluded, clearing current={CurrentGateName}, lastDetected={LastDetectedGateName}");
             CurrentGateName = null;
             CurrentGateType = null;
             CurrentGateDetectedAt = null;
@@ -384,7 +392,7 @@ public sealed class Plugin : IDalamudPlugin
                 if (text.Contains(substring, StringComparison.OrdinalIgnoreCase))
                 {
                     var gateName = GateDefinitions.DisplayNames[gateType];
-                    Log.Information($"{Tag} GATE now underway: {gateName}");
+                    Log.Information($"{Tag} GATE now underway: {gateName} (current was {CurrentGateName ?? "none"})");
 
                     if (CurrentGateName == null)
                     {
@@ -392,6 +400,7 @@ public sealed class Plugin : IDalamudPlugin
                         CurrentGateType = gateType;
                         CurrentGateDetectedAt = DateTime.UtcNow;
                         Configuration.Save();
+                        Log.Information($"{Tag} State: set current={gateName}");
 
                         // API POST is handled by PollDirectorForGateChange (has structured fields)
                         var world = GetCurrentWorldName();
@@ -447,6 +456,7 @@ public sealed class Plugin : IDalamudPlugin
                     // Only set if no local source has already detected this slot's GATE
                     if (LastDetectedGateName == null)
                     {
+                        Log.Information($"{Tag} State: set lastDetected={gateName} (from chat announce)");
                         LastDetectedGateName = gateName;
                         LastDetectedGateType = gateType;
                         Configuration.Save();
@@ -539,6 +549,7 @@ public sealed class Plugin : IDalamudPlugin
                     {
                         if (LastDetectedGateName != null)
                             Log.Information($"{Tag} GATE Keeper: updating from '{LastDetectedGateName}' to '{gateName}'");
+                        Log.Information($"{Tag} State: set lastDetected={gateName} (from NPC)");
                         LastDetectedGateName = gateName;
                         LastDetectedGateType = gateType;
                         Configuration.Save();
@@ -1070,8 +1081,12 @@ public sealed class Plugin : IDalamudPlugin
         // Skip state changes/alerts if this is the same GATE we already detected OR the currently active GATE
         // (director briefly goes null during zone transitions, causing spurious re-detection)
         if (LastDetectedGateName == gateName || CurrentGateName == gateName)
+        {
+            Log.Debug($"{Tag} Director: skip state change (lastDetected={LastDetectedGateName}, current={CurrentGateName})");
             return;
+        }
 
+        Log.Information($"{Tag} State: set lastDetected={gateName} (from director)");
         LastDetectedGateName = gateName;
         LastDetectedGateType = mapped.Value;
         Configuration.Save();
@@ -1082,40 +1097,44 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private unsafe void ForceDirectorPost()
+    private unsafe void ForceDirectorPost(string? course = null)
     {
         var mgr = GoldSaucerManager.Instance();
-        if (mgr == null)
-        {
-            ChatGui.Print($"{Tag} GoldSaucerManager is null");
-            return;
-        }
-
-        var director = mgr->CurrentGFateDirector;
-        if (director == null)
-        {
-            ChatGui.Print($"{Tag} Director is null");
-            return;
-        }
-
-        var gateTypeByte = (byte)director->GateType;
-        var posType = (byte)director->GatePositionType;
-        var endTs = director->EndTimestamp;
-        var flags = (uint)director->Flags;
-        var mapped = MapDirectorGateType(gateTypeByte);
-        var gateName = mapped != null ? GateDefinitions.DisplayNames[mapped.Value] : $"unknown({gateTypeByte})";
-
         var now = DateTime.UtcNow;
         var currentSlot = GateScheduler.GetCurrentGateTime(now);
         var world = GetCurrentWorldName();
 
-        ChatGui.Print($"{Tag} Force POST: {gateName} byte={gateTypeByte} pos={posType} endTs={endTs} flags=0x{flags:X8} slot={currentSlot.Minute} world={world ?? "null"}");
-        Log.Information($"{Tag} Force POST [{now:O}]: {gateName} byte={gateTypeByte} pos={posType} endTs={endTs} flags=0x{flags:X8} slot={currentSlot.Minute}");
+        // If director is available, send full data; otherwise send course-only update
+        byte gateTypeByte = 0;
+        byte posType = 0;
+        int endTs = 0;
+        uint flags = 0;
+        string gateName = CurrentGateName ?? "unknown";
+        bool hasDirector = false;
+
+        if (mgr != null)
+        {
+            var director = mgr->CurrentGFateDirector;
+            if (director != null)
+            {
+                hasDirector = true;
+                gateTypeByte = (byte)director->GateType;
+                posType = (byte)director->GatePositionType;
+                endTs = director->EndTimestamp;
+                flags = (uint)director->Flags;
+                var mapped = MapDirectorGateType(gateTypeByte);
+                gateName = mapped != null ? GateDefinitions.DisplayNames[mapped.Value] : $"unknown({gateTypeByte})";
+            }
+        }
+
+        var courseStr = course != null ? $" course={course}" : "";
+        ChatGui.Print($"{Tag} Force POST: {gateName} byte={gateTypeByte} pos={posType} flags=0x{flags:X8} slot={currentSlot.Minute}{courseStr}");
+        Log.Information($"{Tag} Force POST [{now:O}]: {gateName} byte={gateTypeByte} pos={posType} endTs={endTs} flags=0x{flags:X8} slot={currentSlot.Minute}{courseStr}");
 
         if (world != null)
             ApiService.ReportGate(world, gateName, currentSlot.Minute, "memory_director",
                 $"byte={gateTypeByte},pos={posType},endTs={endTs},flags=0x{flags:X8}",
-                gateTypeByte: gateTypeByte, positionType: posType, flags: (int)flags);
+                gateTypeByte: gateTypeByte, positionType: posType, flags: (int)flags, course: course);
     }
 
     /// <summary>

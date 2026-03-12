@@ -33,7 +33,7 @@ public sealed class ApiService : IDisposable
     }
 
     public void ReportGate(string world, string gateName, int slot, string source, string? rawText = null,
-        int? gateTypeByte = null, int? positionType = null, int? flags = null)
+        int? gateTypeByte = null, int? positionType = null, int? flags = null, string? course = null)
     {
         if (!configuration.EnableApiSharing || string.IsNullOrWhiteSpace(configuration.ApiUrl))
             return;
@@ -53,6 +53,7 @@ public sealed class ApiService : IDisposable
                     gate_type_byte = gateTypeByte,
                     position_type = positionType,
                     flags,
+                    course,
                 });
                 var content = new StringContent(body, Encoding.UTF8, "application/json");
                 var url = configuration.ApiUrl.TrimEnd('/') + "/gate";

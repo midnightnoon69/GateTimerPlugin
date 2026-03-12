@@ -74,6 +74,8 @@ Exact deploy timestamps for determining which code produced a given DB row. Comp
 | 7 | 2026-03-12 06:39 | API | Upsert: `INSERT OR IGNORE` → `ON CONFLICT DO UPDATE` for structured fields. SQLite write moved outside `gateStore.TryAdd` gate so upsert always runs. | Structured fields now survive even when `chat_underway` wins the INSERT race. Dedup problem resolved. |
 | 8 | 2026-03-12 07:05 | API | Gate rate limit 2s → 0.5s. Previous 2s window blocked `memory_director` arriving ~200ms after `chat_underway`. | Both POSTs now land, upsert merges structured fields. |
 | 9 | 2026-03-12 07:08 | Plugin | Removed `chat_underway` API POST. Director is sole POST source (has structured fields). Chat path still handles local state/alerts. | Single POST per GATE, no more race condition or rate limit issues. |
+| 10 | 2026-03-12 07:10 | API | Removed /gate rate limit entirely. Private API, single client. | No more 429s on /gate. |
+| 11 | 2026-03-12 07:30 | Plugin | Fixed slot boundary overwriting CurrentGateName set by chat "underway" handler. Added state change logging. | Display bug fixed: current GATE now shows correctly after "underway" message. No data impact (display-only bug). |
 
 **How to use**: For any DB row, find the latest version # where `deployed < reported_at`. That version's "Impact on Data" tells you what to trust about that row.
 
