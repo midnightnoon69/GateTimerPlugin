@@ -211,5 +211,22 @@ public class ConfigWindow : Window, IDisposable
             }
         }
 
+        ImGui.Spacing();
+
+        // Debug
+        if (ImGui.CollapsingHeader("Debug"))
+        {
+            var debugApi = configuration.DebugApiSimulation;
+            if (ImGui.Checkbox("Simulate API data", ref debugApi))
+            {
+                configuration.DebugApiSimulation = debugApi;
+                configuration.Save();
+            }
+
+            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.60f, 0.55f, 0.65f, 1.00f));
+            ImGui.TextWrapped("Simulates receiving GATE reports from the API. Use to test the overlay without needing another player in Gold Saucer.");
+            ImGui.PopStyleColor();
+        }
+
     }
 }

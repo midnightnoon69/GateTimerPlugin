@@ -72,9 +72,9 @@ public class OverlayWindow : Window, IDisposable
         // Determine next GATE name — local detection takes priority over API
         var nextName = plugin.LastDetectedGateName;
         var isApiSourced = false;
-        if (nextName == null && plugin.ApiService.ApiGateName != null)
+        if (nextName == null && plugin.ApiService.ApiNextGateName != null)
         {
-            nextName = plugin.ApiService.ApiGateName;
+            nextName = plugin.ApiService.ApiNextGateName;
             isApiSourced = true;
         }
 
@@ -157,10 +157,10 @@ public class OverlayWindow : Window, IDisposable
             ImGui.TextUnformatted($"  {plugin.LastDetectedGateName}");
             ImGui.PopStyleColor();
         }
-        else if (plugin.ApiService.ApiGateName != null)
+        else if (plugin.ApiService.ApiNextGateName != null)
         {
             ImGui.PushStyleColor(ImGuiCol.Text, ApiBlue);
-            ImGui.TextUnformatted($"  {plugin.ApiService.ApiGateName} (reported)");
+            ImGui.TextUnformatted($"  {plugin.ApiService.ApiNextGateName} (reported)");
             ImGui.PopStyleColor();
         }
         else

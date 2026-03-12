@@ -56,7 +56,7 @@ public static class GateDefinitions
     {
         { GateType.TheSliceIsRight, 120 },    // 2 min (Event Square)
         { GateType.AirForceOne, 600 },         // 10 min (Round Square)
-        { GateType.Cliffhanger, 600 },         // 10 min (Wonder Square East, no close msg, runs til concluded)
+        { GateType.Cliffhanger, 600 },         // 10 min exactly (Wonder Square East, no close msg — "concluded" msg at :10:00)
         { GateType.LeapOfFaith, 490 },         // ~8 min 10 sec (Round Square)
         { GateType.AnyWayTheWindBlows, 120 },  // 2 min (Event Square)
     };

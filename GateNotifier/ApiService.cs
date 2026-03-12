@@ -17,9 +17,13 @@ public sealed class ApiService : IDisposable
     private DateTime lastPollTime = DateTime.MinValue;
     private const int PollIntervalSeconds = 30;
 
-    public string? ApiGateName { get; private set; }
-    public int? ApiGateSlot { get; private set; }
-    public DateTime? ApiGateExpiresAt { get; private set; }
+    public string? ApiCurrentGateName { get; private set; }
+    public int? ApiCurrentGateSlot { get; private set; }
+    public DateTime? ApiCurrentGateExpiresAt { get; private set; }
+
+    public string? ApiNextGateName { get; private set; }
+    public int? ApiNextGateSlot { get; private set; }
+    public DateTime? ApiNextGateExpiresAt { get; private set; }
 
     public ApiService(Configuration configuration, IPluginLog log)
     {
@@ -28,7 +32,8 @@ public sealed class ApiService : IDisposable
         httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
     }
 
-    public void ReportGate(string world, string gateName, int slot)
+    public void ReportGate(string world, string gateName, int slot, string source, string? rawText = null,
+        int? gateTypeByte = null, int? positionType = null, int? flags = null)
     {
         if (!configuration.EnableApiSharing || string.IsNullOrWhiteSpace(configuration.ApiUrl))
             return;
@@ -43,15 +48,21 @@ public sealed class ApiService : IDisposable
                     world,
                     gate = gateName,
                     slot,
+                    source,
+                    raw_text = rawText,
+                    gate_type_byte = gateTypeByte,
+                    position_type = positionType,
+                    flags,
                 });
                 var content = new StringContent(body, Encoding.UTF8, "application/json");
                 var url = configuration.ApiUrl.TrimEnd('/') + "/gate";
+                log.Information($"API POST /gate: url={url} body={body}");
                 var response = await httpClient.PostAsync(url, content);
-                log.Debug($"API POST /gate: {(int)response.StatusCode}");
+                log.Information($"API POST /gate: {(int)response.StatusCode}");
             }
             catch (Exception ex)
             {
-                log.Debug($"API POST failed: {ex.Message}");
+                log.Warning($"API POST failed: {ex.GetType().Name}: {ex.Message}");
             }
         });
     }
@@ -78,20 +89,50 @@ public sealed class ApiService : IDisposable
                 var response = await httpClient.GetAsync(url);
                 if (!response.IsSuccessStatusCode)
                 {
-                    ApiGateName = null;
-                    ApiGateSlot = null;
-                    ApiGateExpiresAt = null;
+                    ClearApiState();
                     return;
                 }
 
                 var json = await response.Content.ReadAsStringAsync();
-                var result = JsonSerializer.Deserialize<ApiGateResponse>(json);
-                if (result != null)
+                log.Debug($"API GET response: {json}");
+                var results = JsonSerializer.Deserialize<ApiGateResponse[]>(json);
+                if (results == null || results.Length == 0)
                 {
-                    ApiGateName = result.Gate;
-                    ApiGateSlot = result.Slot;
-                    ApiGateExpiresAt = result.ExpiresAt;
+                    log.Debug("API GET: no results after deserialize");
+                    ClearApiState();
+                    return;
                 }
+
+                var currentSlot = (DateTime.UtcNow.Minute / 20) * 20;
+                log.Debug($"API GET: {results.Length} result(s), currentSlot={currentSlot}");
+
+                ApiCurrentGateName = null;
+                ApiCurrentGateSlot = null;
+                ApiCurrentGateExpiresAt = null;
+                ApiNextGateName = null;
+                ApiNextGateSlot = null;
+                ApiNextGateExpiresAt = null;
+
+                foreach (var r in results)
+                {
+                    log.Debug($"API GET: gate={r.Gate} slot={r.Slot}");
+                    if (r.Slot == currentSlot)
+                    {
+                        ApiCurrentGateName = r.Gate;
+                        ApiCurrentGateSlot = r.Slot;
+                        ApiCurrentGateExpiresAt = r.ExpiresAt;
+                    }
+                    else
+                    {
+                        ApiNextGateName = r.Gate;
+                        ApiNextGateSlot = r.Slot;
+                        ApiNextGateExpiresAt = r.ExpiresAt;
+                    }
+                }
+                if (ApiNextGateName != null)
+                    log.Information($"[GateNotifier] API received next GATE: {ApiNextGateName} (slot {ApiNextGateSlot})");
+                if (ApiCurrentGateName != null)
+                    log.Information($"[GateNotifier] API received current GATE: {ApiCurrentGateName} (slot {ApiCurrentGateSlot})");
             }
             catch (Exception ex)
             {
@@ -100,11 +141,48 @@ public sealed class ApiService : IDisposable
         });
     }
 
+    public void ReportEvent(string world, string eventType, string message)
+    {
+        if (!configuration.EnableApiSharing || string.IsNullOrWhiteSpace(configuration.ApiUrl))
+            return;
+
+        Task.Run(async () =>
+        {
+            try
+            {
+                var body = JsonSerializer.Serialize(new
+                {
+                    world,
+                    eventType,
+                    message,
+                });
+                var content = new StringContent(body, Encoding.UTF8, "application/json");
+                var url = configuration.ApiUrl.TrimEnd('/') + "/event";
+                var response = await httpClient.PostAsync(url, content);
+                log.Debug($"API POST /event: {(int)response.StatusCode}");
+            }
+            catch (Exception ex)
+            {
+                log.Debug($"API POST /event failed: {ex.Message}");
+            }
+        });
+    }
+
+    public void SetSimulatedNextGate(string gateName, int slot, DateTime expiresAt)
+    {
+        ApiNextGateName = gateName;
+        ApiNextGateSlot = slot;
+        ApiNextGateExpiresAt = expiresAt;
+    }
+
     public void ClearApiState()
     {
-        ApiGateName = null;
-        ApiGateSlot = null;
-        ApiGateExpiresAt = null;
+        ApiCurrentGateName = null;
+        ApiCurrentGateSlot = null;
+        ApiCurrentGateExpiresAt = null;
+        ApiNextGateName = null;
+        ApiNextGateSlot = null;
+        ApiNextGateExpiresAt = null;
     }
 
     public void Dispose()

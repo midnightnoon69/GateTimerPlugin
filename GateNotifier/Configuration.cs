@@ -28,7 +28,10 @@ public class Configuration : IPluginConfiguration
 
     // API sharing settings
     public bool EnableApiSharing { get; set; } = true;
-    public string ApiUrl { get; set; } = "http://localhost:5000";
+    public string ApiUrl { get; set; } = "https://saucyxiv.duckdns.org";
+
+    // Debug
+    public bool DebugApiSimulation { get; set; } = false;
 
     // Persisted active GATE state (survives reloads)
     public string? ActiveGateName { get; set; }
