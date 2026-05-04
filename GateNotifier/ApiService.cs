@@ -29,43 +29,32 @@ public sealed class ApiService : IDisposable
     {
         this.configuration = configuration;
         this.log = log;
-        httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
     }
 
     public void ReportGate(string world, string gateName, int slot, string source, string? rawText = null,
-        int? gateTypeByte = null, int? positionType = null, int? flags = null, string? course = null)
+        int? gateTypeByte = null, int? positionType = null, int? flags = null, string? course = null,
+        string? pluginVersion = null, byte? cycleCounter = null)
     {
         if (!configuration.EnableApiSharing || string.IsNullOrWhiteSpace(configuration.ApiUrl))
             return;
 
-        // Fire and forget
-        Task.Run(async () =>
+        var body = JsonSerializer.Serialize(new
         {
-            try
-            {
-                var body = JsonSerializer.Serialize(new
-                {
-                    world,
-                    gate = gateName,
-                    slot,
-                    source,
-                    raw_text = rawText,
-                    gate_type_byte = gateTypeByte,
-                    position_type = positionType,
-                    flags,
-                    course,
-                });
-                var content = new StringContent(body, Encoding.UTF8, "application/json");
-                var url = configuration.ApiUrl.TrimEnd('/') + "/gate";
-                log.Information($"API POST /gate: url={url} body={body}");
-                var response = await httpClient.PostAsync(url, content);
-                log.Information($"API POST /gate: {(int)response.StatusCode}");
-            }
-            catch (Exception ex)
-            {
-                log.Warning($"API POST failed: {ex.GetType().Name}: {ex.Message}");
-            }
+            world,
+            gate = gateName,
+            slot,
+            source,
+            raw_text = rawText,
+            gate_type_byte = gateTypeByte,
+            position_type = positionType,
+            flags,
+            course,
+            plugin_version = pluginVersion,
+            cycle_counter = cycleCounter.HasValue ? (int?)cycleCounter.Value : null,
         });
+        var url = configuration.ApiUrl.TrimEnd('/') + "/gate";
+        PostWithRetry(url, body, "/gate");
     }
 
     public void PollIfNeeded(string? world)
@@ -142,7 +131,8 @@ public sealed class ApiService : IDisposable
         });
     }
 
-    public void ReportEvent(string world, string eventType, string message)
+    public void ReportEvent(string world, string eventType, string message,
+        string? pluginVersion = null, byte? cycleCounter = null)
     {
         if (!configuration.EnableApiSharing || string.IsNullOrWhiteSpace(configuration.ApiUrl))
             return;
@@ -156,6 +146,8 @@ public sealed class ApiService : IDisposable
                     world,
                     eventType,
                     message,
+                    plugin_version = pluginVersion,
+                    cycle_counter = cycleCounter.HasValue ? (int?)cycleCounter.Value : null,
                 });
                 var content = new StringContent(body, Encoding.UTF8, "application/json");
                 var url = configuration.ApiUrl.TrimEnd('/') + "/event";
@@ -166,6 +158,31 @@ public sealed class ApiService : IDisposable
             {
                 log.Debug($"API POST /event failed: {ex.Message}");
             }
+        });
+    }
+
+    private void PostWithRetry(string url, string body, string label, int maxRetries = 3)
+    {
+        Task.Run(async () =>
+        {
+            for (var attempt = 1; attempt <= maxRetries; attempt++)
+            {
+                try
+                {
+                    var content = new StringContent(body, Encoding.UTF8, "application/json");
+                    log.Information($"API POST {label}: attempt {attempt}/{maxRetries}");
+                    var response = await httpClient.PostAsync(url, content);
+                    log.Information($"API POST {label}: {(int)response.StatusCode}");
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    log.Warning($"API POST {label} attempt {attempt}/{maxRetries} failed: {ex.GetType().Name}: {ex.Message}");
+                    if (attempt < maxRetries)
+                        await Task.Delay(5000);
+                }
+            }
+            log.Error($"API POST {label}: all {maxRetries} attempts failed, data lost");
         });
     }
 

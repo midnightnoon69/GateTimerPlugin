@@ -22,6 +22,7 @@ public class OverlayWindow : Window, IDisposable
     private static readonly Vector4 SeparatorColor = new(0.85f, 0.65f, 0.13f, 0.40f);
     private static readonly Vector4 OrangeHighlight = new(0.95f, 0.60f, 0.15f, 1.00f);
     private static readonly Vector4 ApiBlue = new(0.40f, 0.70f, 1.00f, 1.00f);
+    private static readonly Vector4 ActiveDim = new(0.75f, 0.55f, 0.30f, 1.00f);
 
     public OverlayWindow(Plugin plugin)
         : base("GATE Timer##GateOverlay", ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoCollapse)
@@ -78,6 +79,9 @@ public class OverlayWindow : Window, IDisposable
             isApiSourced = true;
         }
 
+        // Check if a GATE is active but registration is closed (SIR/AWTW pattern)
+        var activeButClosed = plugin.CurrentGateName != null && plugin.CurrentGateDetectedAt == null;
+
         // Countdown line with toggle arrow
         var arrow = expanded ? "\u25BC" : "\u25B2";
         var countdownColor = nextName != null
@@ -88,6 +92,15 @@ public class OverlayWindow : Window, IDisposable
                 ? $"{arrow} {nextName} (reported) in {countdown}"
                 : $"{arrow} {nextName} in {countdown}")
             : $"{arrow} Next GATE in {countdown}";
+
+        // If a GATE is running with closed registration, prepend it to the countdown line
+        if (activeButClosed)
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, ActiveDim);
+            ImGui.TextUnformatted($"{plugin.CurrentGateName} (in progress)");
+            ImGui.PopStyleColor();
+        }
+
         ImGui.PushStyleColor(ImGuiCol.Text, countdownColor);
         if (ImGui.Selectable(countdownLabel))
         {
@@ -125,8 +138,8 @@ public class OverlayWindow : Window, IDisposable
             }
             else
             {
-                ImGui.PushStyleColor(ImGuiCol.Text, DimText);
-                ImGui.TextUnformatted($"  {plugin.CurrentGateName}  —  Registration closed");
+                ImGui.PushStyleColor(ImGuiCol.Text, ActiveDim);
+                ImGui.TextUnformatted($"  {plugin.CurrentGateName}  —  In progress (closed)");
                 ImGui.PopStyleColor();
             }
         }

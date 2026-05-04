@@ -1,17 +1,19 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Text.RegularExpressions;
 using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.Command;
+using Dalamud.Game.Chat;
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
 using FFXIVClientStructs.FFXIV.Client.Game.GoldSaucer;
+using FFXIVClientStructs.FFXIV.Client.Network;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using Dalamud.Game.Gui.Dtr;
+using Dalamud.Hooking;
 using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Interface.Windowing;
@@ -33,6 +35,8 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
     [PluginService] internal static IPlayerState PlayerState { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
+    [PluginService] internal static ISigScanner SigScanner { get; private set; } = null!;
+    [PluginService] internal static IGameInteropProvider GameInteropProvider { get; private set; } = null!;
 
     private const string CommandName = "/gate";
     private const string Tag = "[GateNotifier]";
@@ -52,11 +56,14 @@ public sealed class Plugin : IDalamudPlugin
     private byte lastDirectorGateType;
     private int lastDirectorSlot = -1;
     private DateTime lastDirectorChangeTime = DateTime.MinValue;
-    private bool continuousLogging;
-    private DateTime lastContinuousLogTime = DateTime.MinValue;
-    private int lastLoggedEndTimestamp;
-    private string? npcPredictedNextGate;
-    private DateTime npcPredictionTime = DateTime.MinValue;
+
+    // Packet hook for cycle counter (opcode 0x0217)
+    private unsafe delegate void OnReceivePacketDelegate(NetworkModulePacketReceiverCallback* self, uint opcode, nint data);
+    private Hook<OnReceivePacketDelegate>? packetReceiveHook;
+    public byte? LastCycleCounter { get; private set; }
+    public DateTime? LastCycleCounterTime { get; private set; }
+
+    public string PluginVersion => PluginInterface.Manifest.AssemblyVersion.ToString();
     public string? LastDetectedGateName
     {
         get => Configuration.NextGateName;
@@ -102,7 +109,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Toggle overlay. Subcommands: config, clear, dump, log, scan",
+            HelpMessage = "Toggle overlay. /gate help for all commands.",
         });
 
         PluginInterface.UiBuilder.Draw += WindowSystem.Draw;
@@ -118,6 +125,7 @@ public sealed class Plugin : IDalamudPlugin
         AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "Talk", OnTalkPostSetup);
         AddonLifecycle.RegisterListener(AddonEvent.PostRefresh, "Talk", OnTalkPostRefresh);
 
+        InstallPacketHook();
 
         var version = PluginInterface.Manifest.AssemblyVersion;
         Log.Information($"{Tag} v{version} loaded.");
@@ -125,6 +133,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
+        packetReceiveHook?.Dispose();
         dtrEntry.Remove();
 
         Framework.Update -= OnFrameworkUpdate;
@@ -166,23 +175,12 @@ public sealed class Plugin : IDalamudPlugin
             Configuration.Save();
             ChatGui.Print($"{Tag} Local data cleared.");
         }
-        else if (trimmed.Equals("dump", StringComparison.OrdinalIgnoreCase))
+        else if (trimmed.Equals("help", StringComparison.OrdinalIgnoreCase))
         {
-            DumpDirectorState();
-        }
-        else if (trimmed.Equals("log", StringComparison.OrdinalIgnoreCase))
-        {
-            continuousLogging = !continuousLogging;
-            ChatGui.Print($"{Tag} Continuous Director logging: {(continuousLogging ? "ON" : "OFF")}");
-        }
-        else if (trimmed.Equals("scan", StringComparison.OrdinalIgnoreCase))
-        {
-            ScanGoldSaucerMemory();
-        }
-        else if (trimmed.StartsWith("post", StringComparison.OrdinalIgnoreCase))
-        {
-            var courseName = trimmed.Length > 4 ? trimmed[4..].Trim() : null;
-            ForceDirectorPost(courseName);
+            ChatGui.Print($"{Tag} Commands:");
+            ChatGui.Print($"  /gate         — Toggle overlay");
+            ChatGui.Print($"  /gate config  — Open settings");
+            ChatGui.Print($"  /gate clear   — Reset all local state");
         }
         else
         {
@@ -209,10 +207,6 @@ public sealed class Plugin : IDalamudPlugin
         // Poll Director for early GATE detection (up to 15+ min before broadcast)
         PollDirectorForGateChange();
 
-        // Continuous logging mode: log Director state every 10s when fields change
-        if (continuousLogging)
-            ContinuousDirectorLog();
-
         var now = DateTime.UtcNow;
         var timeRemaining = GateScheduler.GetTimeUntilNextGate(now);
 
@@ -224,7 +218,7 @@ public sealed class Plugin : IDalamudPlugin
             {
                 CurrentGateName = LastDetectedGateName;
                 CurrentGateType = LastDetectedGateType;
-                CurrentGateDetectedAt = LastDetectedGateName != null ? now : null;
+                CurrentGateDetectedAt = LastDetectedGateName != null ? GateScheduler.GetCurrentGateTime(now) : null;
             }
             LastDetectedGateName = null;
             LastDetectedGateType = null;
@@ -329,16 +323,16 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private void OnChatMessage(XivChatType type, int timestamp, ref SeString sender, ref SeString message, ref bool isHandled)
+    private void OnChatMessage(IHandleableChatMessage msg)
     {
         if (!Configuration.EnableChatDetection)
             return;
 
         // GATE announcements use chat type 68 (0x0044), a system announcement type.
-        if (((int)type & 0x7F) != 68)
+        if (((int)msg.LogKind & 0x7F) != 68)
             return;
 
-        var text = message.TextValue;
+        var text = msg.Message.TextValue;
 
         // Detect registration closing (two variants by venue)
         // Round Square: "Entries for the special limited-time event are now closed"
@@ -350,17 +344,17 @@ public sealed class Plugin : IDalamudPlugin
             {
                 var duration = (DateTime.UtcNow - CurrentGateDetectedAt.Value).TotalSeconds;
                 Log.Information($"{Tag} GATE registration closed: {CurrentGateName} after {duration:F0}s");
-                LogGateTiming(CurrentGateName, CurrentGateDetectedAt.Value, DateTime.UtcNow, duration);
 
                 var world = GetCurrentWorldName();
                 if (world != null)
                     ApiService.ReportEvent(world, "gate_registration_closed",
-                        $"{CurrentGateName}|{duration:F1}s|slot={GetCurrentSlot()}");
+                        $"{CurrentGateName}|{duration:F1}s|slot={GetCurrentSlot()}",
+                        PluginVersion, LastCycleCounter);
             }
 
-            Log.Information($"{Tag} State: registration closed, clearing current={CurrentGateName}");
-            CurrentGateName = null;
-            CurrentGateType = null;
+            Log.Information($"{Tag} State: registration closed for {CurrentGateName}, keeping as active (event still running)");
+            // Don't clear CurrentGateName — the GATE is still running, just registration ended.
+            // Clear DetectedAt so the join timer disappears from the overlay.
             CurrentGateDetectedAt = null;
             Configuration.Save();
             return;
@@ -379,7 +373,7 @@ public sealed class Plugin : IDalamudPlugin
             var world = GetCurrentWorldName();
             if (world != null)
                 ApiService.ReportEvent(world, "gate_concluded",
-                    $"slot={GetCurrentSlot()}");
+                    $"slot={GetCurrentSlot()}", PluginVersion, LastCycleCounter);
             return;
         }
 
@@ -394,21 +388,22 @@ public sealed class Plugin : IDalamudPlugin
                     var gateName = GateDefinitions.DisplayNames[gateType];
                     Log.Information($"{Tag} GATE now underway: {gateName} (current was {CurrentGateName ?? "none"})");
 
+                    // Always report gate_underway event (PKT 0x022C may have already set state)
+                    var world = GetCurrentWorldName();
+                    if (world != null)
+                    {
+                        ApiService.ReportEvent(world, "gate_underway",
+                            $"{gateName}|slot={GetCurrentSlot()}",
+                            PluginVersion, LastCycleCounter);
+                    }
+
                     if (CurrentGateName == null)
                     {
                         CurrentGateName = gateName;
                         CurrentGateType = gateType;
-                        CurrentGateDetectedAt = DateTime.UtcNow;
+                        CurrentGateDetectedAt = GateScheduler.GetCurrentGateTime(DateTime.UtcNow);
                         Configuration.Save();
                         Log.Information($"{Tag} State: set current={gateName}");
-
-                        // API POST is handled by PollDirectorForGateChange (has structured fields)
-                        var world = GetCurrentWorldName();
-                        if (world != null)
-                        {
-                            ApiService.ReportEvent(world, "gate_underway",
-                                $"{gateName}|slot={GetCurrentSlot()}");
-                        }
 
                         if (Configuration.EnabledGates.TryGetValue(gateType, out var enabled) && enabled)
                         {
@@ -424,17 +419,12 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         // Detect GATE announcement (pre-start)
-        var matched = false;
         foreach (var (gateType, substring) in GateDefinitions.ChatSubstrings)
         {
             if (text.Contains(substring, StringComparison.OrdinalIgnoreCase))
             {
-                matched = true;
                 var gateName = GateDefinitions.DisplayNames[gateType];
                 Log.Information($"{Tag} GATE detected: {gateName}");
-
-                // Check for NPC prediction mismatch (sequence break detection)
-                CheckNpcPredictionMismatch(gateName);
 
                 var timeRemaining = GateScheduler.GetTimeUntilNextGate(DateTime.UtcNow);
 
@@ -444,12 +434,13 @@ public sealed class Plugin : IDalamudPlugin
                 {
                     CurrentGateName = gateName;
                     CurrentGateType = gateType;
-                    CurrentGateDetectedAt = DateTime.UtcNow;
+                    CurrentGateDetectedAt = GateScheduler.GetCurrentGateTime(DateTime.UtcNow);
                     Configuration.Save();
 
                     var world = GetCurrentWorldName();
                     if (world != null)
-                        ApiService.ReportGate(world, gateName, GetCurrentSlot(), "chat_announce", text);
+                        ApiService.ReportGate(world, gateName, GetCurrentSlot(), "chat_announce", text,
+                            pluginVersion: PluginVersion, cycleCounter: LastCycleCounter);
                 }
                 else
                 {
@@ -474,25 +465,14 @@ public sealed class Plugin : IDalamudPlugin
                     var nextSlot = GateScheduler.GetNextGateTime(DateTime.UtcNow);
                     var world = GetCurrentWorldName();
                     if (world != null)
-                        ApiService.ReportGate(world, gateName, nextSlot.Minute, "chat_announce", text);
+                        ApiService.ReportGate(world, gateName, nextSlot.Minute, "chat_announce", text,
+                            pluginVersion: PluginVersion, cycleCounter: LastCycleCounter);
                 }
 
                 break;
             }
         }
 
-        if (!matched)
-        {
-            var eventType = ClassifyGoldSaucerEvent(text);
-            if (eventType == "gate_in_progress")
-                return;
-
-            Log.Information($"{Tag} Event {eventType}: {text}");
-
-            var world = GetCurrentWorldName();
-            if (world != null)
-                ApiService.ReportEvent(world, eventType, text);
-        }
     }
 
     private unsafe void OnTalkPostSetup(AddonEvent type, AddonArgs args)
@@ -540,10 +520,6 @@ public sealed class Plugin : IDalamudPlugin
                     var gateName = GateDefinitions.DisplayNames[gateType];
                     Log.Information($"{Tag} GATE Keeper revealed next GATE: {gateName}");
 
-                    // Track NPC prediction for mismatch detection
-                    npcPredictedNextGate = gateName;
-                    npcPredictionTime = DateTime.UtcNow;
-
                     // Update if no detection yet, or if NPC now shows a different gate (previous was stale)
                     if (LastDetectedGateName == null || LastDetectedGateName != gateName)
                     {
@@ -576,7 +552,8 @@ public sealed class Plugin : IDalamudPlugin
                         var world = GetCurrentWorldName();
                         Log.Information($"{Tag} API POST: world={world ?? "null"}, gate={gateName}, slot={nextSlot.Minute}");
                         if (world != null)
-                            ApiService.ReportGate(world, gateName, nextSlot.Minute, "npc_gate_keeper", text);
+                            ApiService.ReportGate(world, gateName, nextSlot.Minute, "npc_gate_keeper", text,
+                                pluginVersion: PluginVersion, cycleCounter: LastCycleCounter);
                     }
 
                     break;
@@ -730,281 +707,134 @@ public sealed class Plugin : IDalamudPlugin
         return remaining > 0 ? TimeSpan.FromSeconds(remaining) : null;
     }
 
-    private void LogGateTiming(string gateName, DateTime openedUtc, DateTime closedUtc, double durationSeconds)
+    // ── Packet hook: GATE announcement (0x022C) + cycle counter ──
+
+    private unsafe void InstallPacketHook()
     {
         try
         {
-            var dir = PluginInterface.GetPluginConfigDirectory();
-            var path = Path.Combine(dir, "gate_timings.csv");
-            var exists = File.Exists(path);
-            using var writer = new StreamWriter(path, append: true);
-            if (!exists)
-                writer.WriteLine("gate,opened_utc,closed_utc,duration_seconds");
-            writer.WriteLine($"{gateName},{openedUtc:O},{closedUtc:O},{durationSeconds:F1}");
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"{Tag} Failed to log gate timing: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Dump all readable GFateDirector fields to chat and log for analysis.
-    /// </summary>
-    private unsafe void DumpDirectorState()
-    {
-        var mgr = GoldSaucerManager.Instance();
-        if (mgr == null)
-        {
-            ChatGui.Print($"{Tag} GoldSaucerManager not available (not in Gold Saucer?)");
-            return;
-        }
-
-        var director = mgr->CurrentGFateDirector;
-        if (director == null)
-        {
-            ChatGui.Print($"{Tag} No GFateDirector active.");
-            return;
-        }
-
-        var gateType = (byte)director->GateType;
-        var posType = (byte)director->GatePositionType;
-        var endTs = director->EndTimestamp;
-        var flags = (uint)director->Flags;
-
-        var mapped = MapDirectorGateType(gateType);
-        var gateName = mapped != null ? GateDefinitions.DisplayNames[mapped.Value] : $"Unknown({gateType})";
-
-        var now = DateTime.UtcNow;
-        var endDt = endTs > 0 ? DateTimeOffset.FromUnixTimeSeconds(endTs).UtcDateTime : (DateTime?)null;
-        var remaining = endDt.HasValue ? (endDt.Value - now).TotalSeconds : -1;
-
-        var msg = $"{Tag} Director dump @ {now:HH:mm:ss} UTC\n" +
-                  $"  GateType: {gateType} ({gateName})\n" +
-                  $"  PositionType: {posType}\n" +
-                  $"  EndTimestamp: {endTs} ({endDt:HH:mm:ss} UTC, {remaining:F0}s remaining)\n" +
-                  $"  Flags: 0x{flags:X8}";
-
-        ChatGui.Print(msg);
-        Log.Information(msg);
-
-        // Also dump raw bytes around the Director struct for analysis
-        var dirPtr = (byte*)director;
-        // Dump key regions
-        var regions = new (int offset, int size, string label)[]
-        {
-            (0x788, 32, "EndTs/BGM/Screen/GateType/Flags"),
-        };
-
-        foreach (var (offset, size, label) in regions)
-        {
-            var hex = new System.Text.StringBuilder();
-            for (var i = 0; i < size; i++)
-            {
-                hex.Append($"{dirPtr[offset + i]:X2} ");
-            }
-            var hexMsg = $"  [{label}] +0x{offset:X}: {hex.ToString().Trim()}";
-            ChatGui.Print(hexMsg);
-            Log.Information(hexMsg);
-        }
-
-        // Log to CSV for analysis
-        LogDirectorDump(now, gateType, gateName, posType, endTs, flags);
-    }
-
-    /// <summary>
-    /// Dump GoldSaucerManager and GFateDirector memory to hex files for diffing.
-    /// Run before and after a GATE announcement, then diff to find where "next GATE" lives.
-    /// </summary>
-    private unsafe void ScanGoldSaucerMemory()
-    {
-        var mgr = GoldSaucerManager.Instance();
-        if (mgr == null)
-        {
-            ChatGui.Print($"{Tag} GoldSaucerManager not available.");
-            return;
-        }
-
-        var dir = PluginInterface.GetPluginConfigDirectory();
-        var timestamp = DateTime.UtcNow.ToString("HHmmss");
-
-        // Dump GoldSaucerManager — expanded to catch pool config and schedule data
-        var mgrPtr = (byte*)mgr;
-        var mgrSize = 0x840; // 14 blocks × 0x90 = 0x7E0 + header at 0x78 = 0x858, need at least 0x838 for block 13 floats
-        var mgrPath = Path.Combine(dir, $"gsm_{timestamp}.hex");
-        DumpMemoryToFile(mgrPtr, mgrSize, mgrPath, "GoldSaucerManager");
-
-        // Dump GFateDirector if active — full struct (0x7B0) plus extra (0x100 beyond)
-        var director = mgr->CurrentGFateDirector;
-        if (director != null)
-        {
-            var dirPtr = (byte*)director;
-            var dirSize = 0x8B0; // 0x7B0 struct + 0x100 overflow scan
-            var dirPath = Path.Combine(dir, $"gfd_{timestamp}.hex");
-            DumpMemoryToFile(dirPtr, dirSize, dirPath, "GFateDirector");
-            ChatGui.Print($"{Tag} Scan saved: {mgrPath} + {dirPath}");
-        }
-        else
-        {
-            ChatGui.Print($"{Tag} Scan saved: {mgrPath} (no Director active)");
-        }
-
-        var scanContext = $"{Tag} Scan context [{DateTime.UtcNow:O}]: current={CurrentGateName ?? "none"}, " +
-                         $"lastDetected={LastDetectedGateName ?? "none"}, " +
-                         $"npcPredicted={npcPredictedNextGate ?? "none"}, " +
-                         $"director={(director != null ? "active" : "null")}";
-        ChatGui.Print(scanContext);
-        Log.Information(scanContext);
-        Log.Information($"{Tag} Memory scan saved @ {timestamp}");
-    }
-
-    private unsafe void DumpMemoryToFile(byte* ptr, int size, string path, string label)
-    {
-        try
-        {
-            using var writer = new StreamWriter(path);
-            writer.WriteLine($"# {label} @ {DateTime.UtcNow:O}");
-            writer.WriteLine($"# Base address: 0x{(nint)ptr:X}");
-            writer.WriteLine($"# Size: 0x{size:X} ({size} bytes)");
-            writer.WriteLine();
-
-            for (var offset = 0; offset < size; offset += 16)
-            {
-                var hex = new System.Text.StringBuilder();
-                var ascii = new System.Text.StringBuilder();
-                hex.Append($"{offset:X4}: ");
-
-                for (var i = 0; i < 16 && offset + i < size; i++)
+            // OnReceivePacket at RVA 0x18197D0 (same address used by GateAnalyzer)
+            var addr = SigScanner.Module.BaseAddress + 0x18197D0;
+            packetReceiveHook = GameInteropProvider.HookFromAddress<OnReceivePacketDelegate>(addr,
+                (NetworkModulePacketReceiverCallback* self, uint opcode, nint data) =>
                 {
-                    var b = ptr[offset + i];
-                    hex.Append($"{b:X2} ");
-                    ascii.Append(b >= 0x20 && b < 0x7F ? (char)b : '.');
-                }
+                    OnPacketReceived(opcode, data);
+                    packetReceiveHook!.Original(self, opcode, data);
+                });
+            packetReceiveHook.Enable();
+            Log.Information($"{Tag} Packet hook installed at RVA 0x18197D0");
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"{Tag} Packet hook failed (non-fatal): {ex.Message}");
+        }
+    }
 
-                writer.WriteLine($"{hex,-56} {ascii}");
+    private unsafe void OnPacketReceived(uint hookOpcode, nint data)
+    {
+        try
+        {
+            // IPC opcode is at data[2:4] (little-endian uint16)
+            var ipcOpcode = (ushort)(*(byte*)(data + 2) | (*(byte*)(data + 3) << 8));
+
+            // 0x022C = GATE announcement (post-patch, was 0x00B4)
+            // Fires at :x0:00 with gate_type at data[36] and position_type at data[32]
+            if (ipcOpcode == 0x022C)
+            {
+                OnGateAnnouncementPacket(data);
+                return;
+            }
+
+            // 0x03C9 = GATE director event stream (post-patch, was 0x0217)
+            // Periodic heartbeat every 10s + burst at transitions
+            if (ipcOpcode == 0x03C9)
+            {
+                OnDirectorEventPacket(data);
+                return;
             }
         }
         catch (Exception ex)
         {
-            Log.Error($"{Tag} Failed to dump {label}: {ex.Message}");
+            Log.Error($"{Tag} Packet handler error: {ex.Message}");
         }
     }
 
     /// <summary>
-    /// Continuous logging: log Director state every 10s when any field changes.
-    /// Critical for capturing the full sequence after server maintenance.
+    /// Handle 0x022C GATE announcement packet.
+    /// Payload: data[32] = position_type, data[36] = gate_type_byte.
+    /// Fires once at each :00/:20/:40 transition.
     /// </summary>
-    private unsafe void ContinuousDirectorLog()
+    private unsafe void OnGateAnnouncementPacket(nint data)
     {
+        // Validate this is a GATE announcement (check for Gold Saucer content ID at data[24])
+        // data[24:28] = 10 6B 0F 00 (0x000F6B10) for Gold Saucer GATE announcements
+        var contentId = *(uint*)(data + 24);
+        if (contentId != 0x000F6B10)
+            return;
+
+        var positionType = *(byte*)(data + 32);
+        var gateTypeByte = *(byte*)(data + 36);
+
+        var mapped = MapDirectorGateType(gateTypeByte);
+        if (mapped == null)
+        {
+            Log.Warning($"{Tag} PKT 0x022C: unknown gate_type={gateTypeByte}, pos={positionType}");
+            return;
+        }
+
+        var gateName = GateDefinitions.DisplayNames[mapped.Value];
+        Log.Information($"{Tag} PKT 0x022C GATE announcement: {gateName} (type={gateTypeByte}, pos={positionType})");
+
+        // Report to API
         var now = DateTime.UtcNow;
-        if ((now - lastContinuousLogTime).TotalSeconds < 10)
-            return;
-        lastContinuousLogTime = now;
-
-        var mgr = GoldSaucerManager.Instance();
-        if (mgr == null)
-            return;
-
-        var director = mgr->CurrentGFateDirector;
-        if (director == null)
-            return;
-
-        var gateType = (byte)director->GateType;
-        var endTs = director->EndTimestamp;
-        var posType = (byte)director->GatePositionType;
-        var flags = (uint)director->Flags;
-
-        // Only log when something changed
-        if (gateType == lastDirectorGateType && endTs == lastLoggedEndTimestamp)
-            return;
-
-        lastLoggedEndTimestamp = endTs;
-
-        var mapped = MapDirectorGateType(gateType);
-        var gateName = mapped != null ? GateDefinitions.DisplayNames[mapped.Value] : $"Unknown({gateType})";
-
-        Log.Information($"{Tag} CLog: {gateName} endTs={endTs} pos={posType} flags=0x{flags:X8}");
-        LogDirectorDump(now, gateType, gateName, posType, endTs, flags);
-    }
-
-    private void LogDirectorDump(DateTime utcNow, byte gateType, string gateName, byte posType, int endTs, uint flags)
-    {
-        try
+        var currentSlot = GateScheduler.GetCurrentGateTime(now);
+        var world = GetCurrentWorldName();
+        if (world != null)
         {
-            var dir = PluginInterface.GetPluginConfigDirectory();
-            var path = Path.Combine(dir, "director_dumps.csv");
-            var exists = File.Exists(path);
-            using var writer = new StreamWriter(path, append: true);
-            if (!exists)
-                writer.WriteLine("utc_time,gate_type_byte,gate_name,position_type,end_timestamp,flags");
-            writer.WriteLine($"{utcNow:O},{gateType},{gateName},{posType},{endTs},0x{flags:X8}");
+            ApiService.ReportGate(world, gateName, currentSlot.Minute, "packet_announce",
+                $"type={gateTypeByte},pos={positionType}",
+                gateTypeByte: gateTypeByte, positionType: positionType, flags: 0,
+                pluginVersion: PluginVersion, cycleCounter: LastCycleCounter);
         }
-        catch (Exception ex)
+
+        // Use as GATE detection — this is the fastest source (direct from server packet)
+        if (CurrentGateName != gateName)
         {
-            Log.Error($"{Tag} Failed to log director dump: {ex.Message}");
+            Log.Information($"{Tag} State: set current={gateName} (from packet 0x022C)");
+            CurrentGateName = gateName;
+            CurrentGateType = mapped.Value;
+            CurrentGateDetectedAt = GateScheduler.GetCurrentGateTime(now);
+            Configuration.Save();
+
+            if (Configuration.EnabledGates.TryGetValue(mapped.Value, out var enabled) && enabled)
+            {
+                SendGateDetectedAlert(mapped.Value);
+            }
         }
     }
 
     /// <summary>
-    /// Compare the announced GATE against what the NPC predicted.
-    /// A mismatch indicates a server re-seed (e.g., maintenance boundary).
+    /// Handle 0x03C9 director event stream packet.
+    /// Periodic heartbeat: data[16:20] = 18 00 00 00.
+    /// Transition burst: data[16:20] = 64/6D 00 00 00 with content ID at data[20:24].
     /// </summary>
-    private void CheckNpcPredictionMismatch(string announcedGate)
+    private unsafe void OnDirectorEventPacket(nint data)
     {
-        if (npcPredictedNextGate == null)
+        var payload16 = *(uint*)(data + 16);
+
+        // Skip periodic heartbeats (payload16 = 0x18 = 24)
+        if (payload16 == 0x18)
             return;
 
-        // Only consider predictions made within the current cycle (20min + small buffer)
-        var age = (DateTime.UtcNow - npcPredictionTime).TotalMinutes;
-        if (age > 21)
-        {
-            npcPredictedNextGate = null;
-            return;
-        }
-
-        if (string.Equals(npcPredictedNextGate, announcedGate, StringComparison.OrdinalIgnoreCase))
-        {
-            Log.Information($"{Tag} NPC prediction MATCHED: {announcedGate}");
-        }
-        else
-        {
-            var msg = $"{Tag} SEQUENCE BREAK: NPC predicted '{npcPredictedNextGate}' " +
-                      $"but server announced '{announcedGate}' " +
-                      $"(prediction was {age:F1}min ago)";
-            Log.Warning(msg);
-            ChatGui.Print(msg);
-
-            // Log to file
-            LogSequenceBreak(npcPredictedNextGate, announcedGate, npcPredictionTime, DateTime.UtcNow);
-
-            // Report to API
-            var world = GetCurrentWorldName();
-            if (world != null)
-                ApiService.ReportEvent(world, "sequence_break",
-                    $"predicted={npcPredictedNextGate}|actual={announcedGate}|" +
-                    $"prediction_utc={npcPredictionTime:O}|slot={GetCurrentSlot()}");
-        }
-
-        npcPredictedNextGate = null;
+        // Log non-heartbeat director events for analysis
+        var hexDump = new System.Text.StringBuilder(128);
+        for (var i = 0; i < 40 && i < 128; i++)
+            hexDump.Append(((byte*)data)[i].ToString("X2")).Append(' ');
+        Log.Debug($"{Tag} PKT 0x03C9 event: payload16=0x{payload16:X} data[0..39]: {hexDump}");
     }
 
-    private void LogSequenceBreak(string predicted, string actual, DateTime predictionUtc, DateTime announceUtc)
-    {
-        try
-        {
-            var dir = PluginInterface.GetPluginConfigDirectory();
-            var path = Path.Combine(dir, "sequence_breaks.csv");
-            var exists = File.Exists(path);
-            using var writer = new StreamWriter(path, append: true);
-            if (!exists)
-                writer.WriteLine("prediction_utc,announce_utc,predicted_gate,actual_gate,slot");
-            writer.WriteLine($"{predictionUtc:O},{announceUtc:O},{predicted},{actual},{GetCurrentSlot()}");
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"{Tag} Failed to log sequence break: {ex.Message}");
-        }
-    }
+    // RESEARCH METHODS REMOVED — use GateAnalyzer plugin (/ga) for:
+    // dump, scan, post, exd, sig, log, ctx
 
     /// <summary>
     /// Poll GoldSaucerManager's GFateDirector for early GATE detection.
@@ -1065,76 +895,37 @@ public sealed class Plugin : IDalamudPlugin
         var flags = (uint)director->Flags;
         Log.Information($"{Tag} Director: GATE change [{DateTime.UtcNow:O}] -> {gateName} (byte={gateTypeByte}, pos={posType}, endTs={endTs}, flags=0x{flags:X8})");
 
-        // Log every Director change for algorithm analysis
-        LogDirectorDump(now, gateTypeByte, gateName, posType, endTs, flags);
-
-        // Always send director data to API (structured fields for data collection)
-        // even if chat_underway already detected this GATE
-        // Director fires DURING the active GATE, so use current slot, not next
+        // Report to API (structured fields for data collection)
         var currentSlot = GateScheduler.GetCurrentGateTime(now);
         var world = GetCurrentWorldName();
         if (world != null)
+        {
             ApiService.ReportGate(world, gateName, currentSlot.Minute, "memory_director",
                 $"byte={gateTypeByte},pos={posType},endTs={endTs},flags=0x{flags:X8}",
-                gateTypeByte: gateTypeByte, positionType: posType, flags: (int)flags);
+                gateTypeByte: gateTypeByte, positionType: posType, flags: (int)flags,
+                pluginVersion: PluginVersion, cycleCounter: LastCycleCounter);
+        }
 
-        // Skip state changes/alerts if this is the same GATE we already detected OR the currently active GATE
+        // Skip if this is the same GATE we already know about
         // (director briefly goes null during zone transitions, causing spurious re-detection)
-        if (LastDetectedGateName == gateName || CurrentGateName == gateName)
+        if (CurrentGateName == gateName)
         {
-            Log.Debug($"{Tag} Director: skip state change (lastDetected={LastDetectedGateName}, current={CurrentGateName})");
+            Log.Debug($"{Tag} Director: skip — already current GATE '{CurrentGateName}'");
             return;
         }
 
-        Log.Information($"{Tag} State: set lastDetected={gateName} (from director)");
-        LastDetectedGateName = gateName;
-        LastDetectedGateType = mapped.Value;
+        // Director detects the ACTIVE gate, so set CurrentGateName (not LastDetected).
+        // LastDetectedGateName is for the upcoming/next gate (from NPC or pre-announcement).
+        Log.Information($"{Tag} State: set current={gateName} (from director)");
+        CurrentGateName = gateName;
+        CurrentGateType = mapped.Value;
+        CurrentGateDetectedAt = GateScheduler.GetCurrentGateTime(now);
         Configuration.Save();
 
         if (Configuration.EnabledGates.TryGetValue(mapped.Value, out var enabled) && enabled)
         {
             SendGateDetectedAlert(mapped.Value);
         }
-    }
-
-    private unsafe void ForceDirectorPost(string? course = null)
-    {
-        var mgr = GoldSaucerManager.Instance();
-        var now = DateTime.UtcNow;
-        var currentSlot = GateScheduler.GetCurrentGateTime(now);
-        var world = GetCurrentWorldName();
-
-        // If director is available, send full data; otherwise send course-only update
-        byte gateTypeByte = 0;
-        byte posType = 0;
-        int endTs = 0;
-        uint flags = 0;
-        string gateName = CurrentGateName ?? "unknown";
-        bool hasDirector = false;
-
-        if (mgr != null)
-        {
-            var director = mgr->CurrentGFateDirector;
-            if (director != null)
-            {
-                hasDirector = true;
-                gateTypeByte = (byte)director->GateType;
-                posType = (byte)director->GatePositionType;
-                endTs = director->EndTimestamp;
-                flags = (uint)director->Flags;
-                var mapped = MapDirectorGateType(gateTypeByte);
-                gateName = mapped != null ? GateDefinitions.DisplayNames[mapped.Value] : $"unknown({gateTypeByte})";
-            }
-        }
-
-        var courseStr = course != null ? $" course={course}" : "";
-        ChatGui.Print($"{Tag} Force POST: {gateName} byte={gateTypeByte} pos={posType} flags=0x{flags:X8} slot={currentSlot.Minute}{courseStr}");
-        Log.Information($"{Tag} Force POST [{now:O}]: {gateName} byte={gateTypeByte} pos={posType} endTs={endTs} flags=0x{flags:X8} slot={currentSlot.Minute}{courseStr}");
-
-        if (world != null)
-            ApiService.ReportGate(world, gateName, currentSlot.Minute, "memory_director",
-                $"byte={gateTypeByte},pos={posType},endTs={endTs},flags=0x{flags:X8}",
-                gateTypeByte: gateTypeByte, positionType: posType, flags: (int)flags, course: course);
     }
 
     /// <summary>
@@ -1155,34 +946,6 @@ public sealed class Plugin : IDalamudPlugin
         };
     }
 
-    private static string ClassifyGoldSaucerEvent(string text)
-    {
-        if (text.Contains("chocobo registrar", StringComparison.OrdinalIgnoreCase))
-            return "chocobo_racing";
-        if (text.Contains("Jumbo Cactpot", StringComparison.OrdinalIgnoreCase))
-            return "jumbo_cactpot";
-        if (text.Contains("Mini Cactpot", StringComparison.OrdinalIgnoreCase))
-        {
-            if (text.Contains("close momentarily", StringComparison.OrdinalIgnoreCase))
-                return "mini_cactpot_closing";
-            if (text.Contains("now being accepted", StringComparison.OrdinalIgnoreCase))
-                return "mini_cactpot_new_drawing";
-            return "mini_cactpot_sales";
-        }
-        if (text.Contains("Triple Triad", StringComparison.OrdinalIgnoreCase))
-        {
-            if (text.Contains("currently underway", StringComparison.OrdinalIgnoreCase))
-                return "triple_triad_underway";
-            return "triple_triad_open";
-        }
-        if (text.Contains("Lord of Verminion", StringComparison.OrdinalIgnoreCase))
-            return "lord_of_verminion";
-        if (text.Contains("trigger finger", StringComparison.OrdinalIgnoreCase) ||
-            text.Contains("bonus phase", StringComparison.OrdinalIgnoreCase))
-            return "gate_in_progress";
-        return "unknown";
-    }
-
     private string? GetCurrentWorldName()
     {
         if (!PlayerState.IsLoaded)
@@ -1196,7 +959,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private int GetCurrentSlot()
     {
-        return (DateTime.UtcNow.Minute / 20) * 20;
+        return GateScheduler.GetCurrentGateTime(DateTime.UtcNow).Minute;
     }
 
     public void OpenConfigUi() => ConfigWindow.IsOpen = true;

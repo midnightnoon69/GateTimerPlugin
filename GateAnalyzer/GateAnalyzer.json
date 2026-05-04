@@ -1,0 +1,15 @@
+{
+  "Author": "Midnight Noon",
+  "Name": "GATE Analyzer",
+  "Punchline": "Research and analysis tools for Gold Saucer GATE mechanics.",
+  "Description": "Developer/research plugin for investigating GATE selection algorithms. Memory scanning, function hooks, data collection, and API upload. Use /ga help for commands.",
+  "InternalName": "GateAnalyzer",
+  "ApplicableVersion": "any",
+  "DalamudApiLevel": 15,
+  "Tags": [
+    "gold saucer",
+    "gate",
+    "research",
+    "analysis"
+  ]
+}

@@ -5,7 +5,7 @@
   "Description": "Alerts you before Gold Saucer GATE events with configurable per-GATE preferences, countdown overlay, DTR bar timer, and chat/toast notifications. Detects active GATEs via chat and GATE Keeper NPC dialogue for early reveals. Use /gate to toggle overlay, /gate config for settings.",
   "InternalName": "GateNotifier",
   "ApplicableVersion": "any",
-  "DalamudApiLevel": 14,
+  "DalamudApiLevel": 15,
   "Tags": [
     "gold saucer",
     "gate",
