@@ -713,16 +713,53 @@ public sealed class Plugin : IDalamudPlugin
     {
         try
         {
-            // OnReceivePacket at RVA 0x18197D0 (same address used by GateAnalyzer)
-            var addr = SigScanner.Module.BaseAddress + 0x18197D0;
+            // Resolve OnReceivePacket from live vtable (survives patches as long as vtable index is stable).
+            // NetworkModulePacketReceiverCallback vtable[8] = OnReceivePacket(uint opcode, nint data)
+            // Verified via: proxy vtable[8], *proxy+0x10 vtable[4], *proxy+0x10+0x08 vtable[1]
+            const int vtableIndex = 8;
+
+            var fw = FFXIVClientStructs.FFXIV.Client.System.Framework.Framework.Instance();
+            if (fw == null)
+            {
+                Log.Warning($"{Tag} Packet hook: Framework instance is null (too early?)");
+                return;
+            }
+
+            var proxy = fw->NetworkModuleProxy;
+            if (proxy == null)
+            {
+                Log.Warning($"{Tag} Packet hook: NetworkModuleProxy is null (too early?)");
+                return;
+            }
+
+            // The proxy itself is a NetworkModulePacketReceiverCallback subclass — read vtable directly
+            var vtable = *(nint**)proxy;
+            var addr = vtable[vtableIndex];
+
+            if (addr == nint.Zero)
+            {
+                Log.Warning($"{Tag} Packet hook: vtable[{vtableIndex}] is null");
+                return;
+            }
+
+            // Sanity check: address should be within the game module
+            var moduleBase = SigScanner.Module.BaseAddress;
+            var moduleEnd = moduleBase + SigScanner.Module.ModuleMemorySize;
+            if (addr < moduleBase || addr >= moduleEnd)
+            {
+                Log.Warning($"{Tag} Packet hook: vtable[{vtableIndex}] = 0x{addr:X} is outside game module — skipping");
+                return;
+            }
+
             packetReceiveHook = GameInteropProvider.HookFromAddress<OnReceivePacketDelegate>(addr,
                 (NetworkModulePacketReceiverCallback* self, uint opcode, nint data) =>
                 {
-                    OnPacketReceived(opcode, data);
                     packetReceiveHook!.Original(self, opcode, data);
+                    OnPacketReceived(opcode, data);
                 });
             packetReceiveHook.Enable();
-            Log.Information($"{Tag} Packet hook installed at RVA 0x18197D0");
+            var rva = addr - moduleBase;
+            Log.Information($"{Tag} Packet hook installed via vtable[{vtableIndex}] (RVA 0x{rva:X})");
         }
         catch (Exception ex)
         {

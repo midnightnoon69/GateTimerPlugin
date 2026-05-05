@@ -878,21 +878,56 @@ public sealed class AnalyzerPlugin : IDalamudPlugin
     {
         try
         {
-            // OnReceivePacket candidate found via vtable analysis at RVA 0x18197D0.
-            // Appears in proxy vtable[8], *proxy+0x10 vtable[4], *proxy+0x10+0x08 vtable[1].
-            // Saves all callee-saved registers — consistent with a large dispatch function.
-            // Signature prologue is common (matches other functions), so use direct address.
-            var addr = SigScanner.Module.BaseAddress + 0x18197D0;
+            // Resolve OnReceivePacket from live vtable (survives patches as long as vtable index is stable).
+            // NetworkModulePacketReceiverCallback vtable[8] = OnReceivePacket(uint opcode, nint data)
+            const int vtableIndex = 8;
+
+            var fw = FFXIVClientStructs.FFXIV.Client.System.Framework.Framework.Instance();
+            if (fw == null)
+            {
+                Log.Error($"{Tag} Packet hook: Framework instance is null");
+                ChatGui.Print($"{Tag} Hook failed: Framework not ready");
+                return false;
+            }
+
+            var proxy = fw->NetworkModuleProxy;
+            if (proxy == null)
+            {
+                Log.Error($"{Tag} Packet hook: NetworkModuleProxy is null");
+                ChatGui.Print($"{Tag} Hook failed: NetworkModuleProxy not ready");
+                return false;
+            }
+
+            var vtable = *(nint**)proxy;
+            var addr = vtable[vtableIndex];
+
+            if (addr == nint.Zero)
+            {
+                Log.Error($"{Tag} Packet hook: vtable[{vtableIndex}] is null");
+                ChatGui.Print($"{Tag} Hook failed: vtable entry is null");
+                return false;
+            }
+
+            // Sanity check: address should be within the game module
+            var moduleBase = SigScanner.Module.BaseAddress;
+            var moduleEnd = moduleBase + SigScanner.Module.ModuleMemorySize;
+            if (addr < moduleBase || addr >= moduleEnd)
+            {
+                Log.Error($"{Tag} Packet hook: vtable[{vtableIndex}] = 0x{addr:X} is outside game module");
+                ChatGui.Print($"{Tag} Hook failed: vtable points outside game module");
+                return false;
+            }
 
             packetReceiveHook = GameInteropProvider.HookFromAddress<OnReceivePacketDelegate>(addr,
                 (NetworkModulePacketReceiverCallback* self, uint opcode, nint data) =>
                 {
-                    OnPacketReceived(opcode, data);
                     packetReceiveHook!.Original(self, opcode, data);
+                    OnPacketReceived(opcode, data);
                 });
             packetReceiveHook.Enable();
-            ChatGui.Print($"{Tag} Packet hook installed at RVA 0x18197D0");
-            Log.Information($"{Tag} PacketReceive hook at 0x{addr:X} (RVA 0x18197D0)");
+            var rva = addr - moduleBase;
+            ChatGui.Print($"{Tag} Packet hook installed via vtable[{vtableIndex}] (RVA 0x{rva:X})");
+            Log.Information($"{Tag} PacketReceive hook at 0x{addr:X} (RVA 0x{rva:X})");
             return true;
         }
         catch (Exception ex)

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
-    <Version>0.0.0.17</Version>
+    <Version>0.0.0.18</Version>
     <Authors>Midnight Noon</Authors>
     <Description>GATE research and analysis plugin — memory scanning, hooks, data collection.</Description>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
